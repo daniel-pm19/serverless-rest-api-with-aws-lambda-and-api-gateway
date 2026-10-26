@@ -12,7 +12,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import co.edu.escuelaing.Exceptions;
+import co.edu.escuelaing.OrderException;
 import co.edu.escuelaing.Order;
 import co.edu.escuelaing.OrderRequest;
 import co.edu.escuelaing.OrderService;
@@ -41,8 +41,8 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
     public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent event, Context context) {
         try {
             return route(event);
-        } catch (Exceptions e) {
-            return error(statusFor(e), e.getExceptions().name(), e.getDetail());
+        } catch (OrderException e) {
+            return error(statusFor(e), e.getType().name(), e.getDetail());
         } catch (JsonProcessingException e) {
             return error(400, "INVALID_REQUEST", "Request body is not valid JSON for an order");
         } catch (RuntimeException e) {
@@ -54,7 +54,7 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
     }
 
     private APIGatewayProxyResponseEvent route(APIGatewayProxyRequestEvent event)
-            throws Exceptions, JsonProcessingException {
+            throws OrderException, JsonProcessingException {
         String method = event.getHttpMethod();
         String[] segments = segments(event.getPath());
 
@@ -83,7 +83,7 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
     }
 
     private APIGatewayProxyResponseEvent createOrder(APIGatewayProxyRequestEvent event)
-            throws Exceptions, JsonProcessingException {
+            throws OrderException, JsonProcessingException {
         OrderRequest request = event.getBody() == null
                 ? null
                 : MAPPER.readValue(event.getBody(), OrderRequest.class);
@@ -102,11 +102,11 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
         return path.replaceAll("/+$", "");
     }
 
-    private APIGatewayProxyResponseEvent getOrder(String id) throws Exceptions, JsonProcessingException {
+    private APIGatewayProxyResponseEvent getOrder(String id) throws OrderException, JsonProcessingException {
         return json(200, service.getOrder(id));
     }
 
-    private APIGatewayProxyResponseEvent deleteOrder(String id) throws Exceptions {
+    private APIGatewayProxyResponseEvent deleteOrder(String id) throws OrderException {
         service.deleteOrder(id);
         return new APIGatewayProxyResponseEvent()
                 .withStatusCode(204)
@@ -114,7 +114,7 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
     }
 
     private APIGatewayProxyResponseEvent findOrdersByCustomer(APIGatewayProxyRequestEvent event)
-            throws Exceptions, JsonProcessingException {
+            throws OrderException, JsonProcessingException {
         Map<String, String> query = event.getQueryStringParameters();
         String customerId = query == null ? null : query.get("customerId");
 
@@ -122,8 +122,8 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
         return json(200, orders);
     }
 
-    private static int statusFor(Exceptions e) {
-        switch (e.getExceptions()) {
+    private static int statusFor(OrderException e) {
+        switch (e.getType()) {
             case ORDER_NOT_FOUND:
                 return 404;
             default:

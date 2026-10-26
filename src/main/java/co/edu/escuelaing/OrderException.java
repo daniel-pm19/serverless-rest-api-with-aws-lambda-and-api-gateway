@@ -1,8 +1,8 @@
 package co.edu.escuelaing;
 
-public class Exceptions extends Exception {
+public class OrderException extends Exception {
 
-    public enum InnerExceptions {
+    public enum ErrorType {
         ORDER_NOT_FOUND,
         INVALID_ORDER,
         INVALID_QUANTITY,
@@ -10,17 +10,17 @@ public class Exceptions extends Exception {
         INVALID_PRODUCT
     }
 
-    private final InnerExceptions type;
+    private final ErrorType type;
 
     private final String detail;
 
-    public Exceptions(InnerExceptions type, String message){
+    public OrderException(ErrorType type, String message){
         super(type + ": " + message);
         this.type = type;
         this.detail = message;
     }
 
-    public InnerExceptions getExceptions(){
+    public ErrorType getType(){
         return this.type;
     }
 

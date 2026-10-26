@@ -13,7 +13,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import co.edu.escuelaing.Exceptions.InnerExceptions;
+import co.edu.escuelaing.OrderException.ErrorType;
 
 class OrderServiceTest {
 
@@ -72,15 +72,15 @@ class OrderServiceTest {
 
     @Test
     void shouldFailWhenOrderDoesNotExist() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder("ORD-999"));
+        OrderException ex = assertThrows(OrderException.class, () -> service.getOrder("ORD-999"));
 
-        assertEquals(InnerExceptions.ORDER_NOT_FOUND, ex.getExceptions());
+        assertEquals(ErrorType.ORDER_NOT_FOUND, ex.getType());
     }
 
     @Test
     void shouldPrefixErrorMessageWithErrorCode() {
         // API Gateway maps errors to HTTP status codes by matching this prefix
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder("ORD-999"));
+        OrderException ex = assertThrows(OrderException.class, () -> service.getOrder("ORD-999"));
 
         assertEquals("ORDER_NOT_FOUND: Order ORD-999 does not exist", ex.getMessage());
     }
@@ -93,22 +93,22 @@ class OrderServiceTest {
 
         service.deleteOrder(created.getId());
 
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder(created.getId()));
-        assertEquals(InnerExceptions.ORDER_NOT_FOUND, ex.getExceptions());
+        OrderException ex = assertThrows(OrderException.class, () -> service.getOrder(created.getId()));
+        assertEquals(ErrorType.ORDER_NOT_FOUND, ex.getType());
     }
 
     @Test
     void shouldFailWhenDeletingNonexistentOrder() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.deleteOrder("ORD-999"));
+        OrderException ex = assertThrows(OrderException.class, () -> service.deleteOrder("ORD-999"));
 
-        assertEquals(InnerExceptions.ORDER_NOT_FOUND, ex.getExceptions());
+        assertEquals(ErrorType.ORDER_NOT_FOUND, ex.getType());
     }
 
     @Test
     void shouldRejectBlankIdWhenDeleting() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.deleteOrder(" "));
+        OrderException ex = assertThrows(OrderException.class, () -> service.deleteOrder(" "));
 
-        assertEquals(InnerExceptions.INVALID_ORDER, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_ORDER, ex.getType());
     }
 
     @Test
@@ -146,16 +146,16 @@ class OrderServiceTest {
 
     @Test
     void shouldRejectNullOrderId() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder(null));
+        OrderException ex = assertThrows(OrderException.class, () -> service.getOrder(null));
 
-        assertEquals(InnerExceptions.INVALID_ORDER, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_ORDER, ex.getType());
     }
 
     @Test
     void shouldRejectBlankOrderId() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder("   "));
+        OrderException ex = assertThrows(OrderException.class, () -> service.getOrder("   "));
 
-        assertEquals(InnerExceptions.INVALID_ORDER, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_ORDER, ex.getType());
     }
 
     // getOrdersByCustomer
@@ -184,46 +184,46 @@ class OrderServiceTest {
 
     @Test
     void shouldRejectNullCustomerIdInSearch() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrdersByCustomer(null));
+        OrderException ex = assertThrows(OrderException.class, () -> service.getOrdersByCustomer(null));
 
-        assertEquals(InnerExceptions.INVALID_CUSTOMER, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_CUSTOMER, ex.getType());
     }
 
     @Test
     void shouldRejectBlankCustomerIdInSearch() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrdersByCustomer(""));
+        OrderException ex = assertThrows(OrderException.class, () -> service.getOrdersByCustomer(""));
 
-        assertEquals(InnerExceptions.INVALID_CUSTOMER, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_CUSTOMER, ex.getType());
     }
 
     // invalid OrderRequest input
 
     @Test
     void shouldRejectNullCustomerId() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> new OrderRequest(null, "MacBook Air", 1));
+        OrderException ex = assertThrows(OrderException.class, () -> new OrderRequest(null, "MacBook Air", 1));
 
-        assertEquals(InnerExceptions.INVALID_CUSTOMER, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_CUSTOMER, ex.getType());
     }
 
     @Test
     void shouldRejectBlankProduct() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> new OrderRequest("CUST-42", " ", 1));
+        OrderException ex = assertThrows(OrderException.class, () -> new OrderRequest("CUST-42", " ", 1));
 
-        assertEquals(InnerExceptions.INVALID_PRODUCT, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_PRODUCT, ex.getType());
     }
 
     @Test
     void shouldRejectZeroQuantity() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> new OrderRequest("CUST-42", "MacBook Air", 0));
+        OrderException ex = assertThrows(OrderException.class, () -> new OrderRequest("CUST-42", "MacBook Air", 0));
 
-        assertEquals(InnerExceptions.INVALID_QUANTITY, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_QUANTITY, ex.getType());
     }
 
     @Test
     void shouldRejectNegativeQuantity() {
-        Exceptions ex = assertThrows(Exceptions.class, () -> new OrderRequest("CUST-42", "MacBook Air", -3));
+        OrderException ex = assertThrows(OrderException.class, () -> new OrderRequest("CUST-42", "MacBook Air", -3));
 
-        assertEquals(InnerExceptions.INVALID_QUANTITY, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_QUANTITY, ex.getType());
     }
 
     @Test
@@ -232,9 +232,9 @@ class OrderServiceTest {
         request.setProduct("MacBook Air");
         request.setQuantity(1);
 
-        Exceptions ex = assertThrows(Exceptions.class, () -> service.createOrder(request));
+        OrderException ex = assertThrows(OrderException.class, () -> service.createOrder(request));
 
-        assertEquals(InnerExceptions.INVALID_CUSTOMER, ex.getExceptions());
+        assertEquals(ErrorType.INVALID_CUSTOMER, ex.getType());
     }
 
 }

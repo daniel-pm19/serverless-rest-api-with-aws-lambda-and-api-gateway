@@ -1,6 +1,6 @@
 package co.edu.escuelaing;
 
-import co.edu.escuelaing.Exceptions.InnerExceptions;
+import co.edu.escuelaing.OrderException.ErrorType;
 
 public class OrderRequest {
 
@@ -10,7 +10,7 @@ public class OrderRequest {
 
     private int quantity;
 
-    public OrderRequest(String customerId, String product, int quantity) throws Exceptions {
+    public OrderRequest(String customerId, String product, int quantity) throws OrderException {
         this.customerId = validateCustomerId(customerId);
         this.product = validateProduct(product);
         this.quantity = validateQuantity(quantity);
@@ -42,31 +42,31 @@ public class OrderRequest {
         this.quantity = newQuantity;
     }
 
-    public void validate() throws Exceptions {
+    public void validate() throws OrderException {
         validateCustomerId(customerId);
         validateProduct(product);
         validateQuantity(quantity);
     }   
 
-    private String validateCustomerId(String id) throws Exceptions {
+    private String validateCustomerId(String id) throws OrderException {
         if (id == null || id.isBlank()) {
-            throw new Exceptions(InnerExceptions.INVALID_CUSTOMER, "Customer id cannot be null or blank");
+            throw new OrderException(ErrorType.INVALID_CUSTOMER, "Customer id cannot be null or blank");
         }
 
         return id;
     }
 
-    private int validateQuantity(int quantity) throws Exceptions {
+    private int validateQuantity(int quantity) throws OrderException {
         if (quantity <= 0) {
-            throw new Exceptions(InnerExceptions.INVALID_QUANTITY, "Quantity must be > 0");
+            throw new OrderException(ErrorType.INVALID_QUANTITY, "Quantity must be > 0");
         }
 
         return quantity;
     }
 
-    private String validateProduct(String product) throws Exceptions {
+    private String validateProduct(String product) throws OrderException {
         if (product == null || product.isBlank()) {
-            throw new Exceptions(InnerExceptions.INVALID_PRODUCT, "Product cannot be null or blank");
+            throw new OrderException(ErrorType.INVALID_PRODUCT, "Product cannot be null or blank");
         }
 
         return product;

@@ -3,7 +3,7 @@ package co.edu.escuelaing;
 import java.util.ArrayList;
 import java.util.List;
 
-import co.edu.escuelaing.Exceptions.InnerExceptions;
+import co.edu.escuelaing.OrderException.ErrorType;
 
 public class OrderService {
 
@@ -24,9 +24,9 @@ public class OrderService {
         this.nextId = this.orders.size() + 1;
     }
 
-    public Order createOrder(OrderRequest request) throws Exceptions {
+    public Order createOrder(OrderRequest request) throws OrderException {
         if (request == null) {
-            throw new Exceptions(InnerExceptions.INVALID_ORDER, "Request body cannot be null");
+            throw new OrderException(ErrorType.INVALID_ORDER, "Request body cannot be null");
         }
 
         request.validate();
@@ -41,24 +41,24 @@ public class OrderService {
         return newOrder;
     }
 
-    public Order getOrder(String id) throws Exceptions {
+    public Order getOrder(String id) throws OrderException {
         if (id == null || id.isBlank()) {
-            throw new Exceptions(InnerExceptions.INVALID_ORDER, "Order id cannot be null or blank");
+            throw new OrderException(ErrorType.INVALID_ORDER, "Order id cannot be null or blank");
         }
 
         Order order = findOrder(id);
 
         if (order == null) {
-            throw new Exceptions(InnerExceptions.ORDER_NOT_FOUND, "Order " + id + " does not exist");
+            throw new OrderException(ErrorType.ORDER_NOT_FOUND, "Order " + id + " does not exist");
         }
 
         return order;
 
     }
 
-    public List<Order> getOrdersByCustomer(String id) throws Exceptions {
+    public List<Order> getOrdersByCustomer(String id) throws OrderException {
         if (id == null || id.isBlank()) {
-            throw new Exceptions(InnerExceptions.INVALID_CUSTOMER, "Customer id cannot be blank or null");
+            throw new OrderException(ErrorType.INVALID_CUSTOMER, "Customer id cannot be blank or null");
         }
 
         List<Order> customerOrders = new ArrayList<>();
@@ -72,15 +72,15 @@ public class OrderService {
         return customerOrders;
     }
 
-    public void deleteOrder(String id) throws Exceptions {
+    public void deleteOrder(String id) throws OrderException {
         if (id == null || id.isBlank()) {
-            throw new Exceptions(InnerExceptions.INVALID_ORDER, "Order id cannot be null or blank");
+            throw new OrderException(ErrorType.INVALID_ORDER, "Order id cannot be null or blank");
         }
 
         Order order = findOrder(id);
 
         if (order == null) {
-            throw new Exceptions(InnerExceptions.ORDER_NOT_FOUND, "Order " + id + " does not exist");
+            throw new OrderException(ErrorType.ORDER_NOT_FOUND, "Order " + id + " does not exist");
         }
 
         orders.remove(order);

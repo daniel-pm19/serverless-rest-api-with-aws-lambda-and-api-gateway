@@ -78,7 +78,7 @@ Error codes used by the API:
 | `ORDER_NOT_FOUND`  | 404         | No order exists with the given id                             |
 | `INTERNAL_ERROR`   | 500         | Any unexpected failure (details are logged, not exposed)      |
 
-The codes are the values of the Java enum `Exceptions.InnerExceptions` (except `INTERNAL_ERROR`), so the code a client sees is the code the application raised.
+The codes are the values of the Java enum `OrderException.ErrorType` (except `INTERNAL_ERROR`), so the code a client sees is the code the application raised.
 
 ---
 
@@ -270,7 +270,7 @@ serverless-rest-api-with-aws-lambda-and-api-gateway/
     │   ├── Order.java          # Domain entity: id, customerId, product, quantity
     │   ├── OrderRequest.java   # Data needed to create an order (no id)
     │   ├── OrderService.java   # Business logic: create, get, find by customer, delete
-    │   ├── Exceptions.java     # Domain exception with a type (ORDER_NOT_FOUND, INVALID_*...)
+    │   ├── OrderException.java # Domain exception with an ErrorType (ORDER_NOT_FOUND, INVALID_*...)
     │   └── http/
     │       └── OrdersHandler.java   # HTTP adapter for Lambda proxy integration (Part V)
     └── test/java/co/edu/escuelaing/
@@ -281,6 +281,8 @@ serverless-rest-api-with-aws-lambda-and-api-gateway/
 
 The `http` package was added in Part V. Everything outside it is the plain-Java application from Part I.
 
+> **Naming note.** The domain exception was originally called `Exceptions`, with a nested enum `InnerExceptions` and a getter `getExceptions()`. At the end of the workshop it was renamed to **`OrderException`**, with **`ErrorType`** and **`getType()`**, which describe what they are. Outputs captured before the rename (Parts II–III, e.g. `"errorType": "co.edu.escuelaing.Exceptions"`) are kept exactly as they were observed, and the prediction in `docs/` is kept as committed. Behavior did not change: the error codes and messages are the same.
+
 ### Application operations
 
 | Operation                                        | Maps to API operation              |
@@ -289,7 +291,7 @@ The `http` package was added in Part V. Everything outside it is the plain-Java 
 | `Order getOrder(String id)`                      | `GET /orders/{id}`                 |
 | `List<Order> getOrdersByCustomer(String customerId)` | `GET /orders?customerId={customerId}` |
 
-`OrderService` stores orders in an in-memory `List<Order>`. It has no dependency on HTTP, API Gateway, Lambda, Spring Boot or any web server. Errors are reported with the domain exception `Exceptions`, whose `InnerExceptions` type (e.g. `ORDER_NOT_FOUND`, `INVALID_QUANTITY`) tells what went wrong; translating them into HTTP status codes (400, 404, 500) is the job of a later adapter layer (the Lambda handler / API Gateway), not of the service.
+`OrderService` stores orders in an in-memory `List<Order>`. It has no dependency on HTTP, API Gateway, Lambda, Spring Boot or any web server. Errors are reported with the domain exception `OrderException`, whose `ErrorType` (e.g. `ORDER_NOT_FOUND`, `INVALID_QUANTITY`) tells what went wrong; translating them into HTTP status codes (400, 404, 500) is the job of a later adapter layer (the Lambda handler / API Gateway), not of the service.
 
 ### Build and test
 
@@ -528,7 +530,7 @@ flowchart TD
             direction TB
             Service["OrderService.createOrder(OrderRequest)<br/>— request.validate()<br/>— generate id ORD-n<br/>— add to in-memory List&lt;Order&gt;"]
             Order["Order<br/>(id, customerId, product, quantity)"]
-            Ex["Exceptions<br/>(INVALID_QUANTITY, INVALID_CUSTOMER, ...)"]
+            Ex["OrderException<br/>(INVALID_QUANTITY, INVALID_CUSTOMER, ...)"]
         end
         Ser["Serialize Order → JSON<br/>(getters: getId → &quot;id&quot;, ...)"]
         Err["Build error JSON<br/>errorMessage / errorType / stackTrace"]
@@ -556,7 +558,7 @@ Java Object               OrderRequest  (new OrderRequest() + setters)
 Java Function             OrderService.createOrder(OrderRequest)
   |
   v
-Java Object               Order  (or a thrown Exceptions)
+Java Object               Order  (or a thrown OrderException)
   |
   v
 JSON  {"id":"ORD-1","customerId":"CUST-42","product":"MacBook Air","quantity":1}
@@ -767,7 +769,7 @@ flowchart LR
 
 ### Change in the Java application: error code in the message
 
-With a non-proxy integration, API Gateway chooses the HTTP status by applying a regular expression (**Lambda error regex**) to the `errorMessage` of a failed invocation. It cannot see the exception's type field. To make that matching reliable, `Exceptions` now puts its error code in front of the message:
+With a non-proxy integration, API Gateway chooses the HTTP status by applying a regular expression (**Lambda error regex**) to the `errorMessage` of a failed invocation. It cannot see the exception's type field. To make that matching reliable, `OrderException` (then called `Exceptions`) now puts its error code in front of the message:
 
 ```java
 super(type + ": " + message);   // e.g. "ORDER_NOT_FOUND: Order ORD-999 does not exist"
@@ -931,7 +933,7 @@ Cases 9–12 could be fixed in API Gateway without touching Java. **Gateway Resp
 - **JSON ↔ Java conversion:** done by the Lambda Java runtime.
 - **Storage:** in-memory, inside each Lambda environment.
 
-Our Java code still has **zero knowledge of HTTP**: it receives a `String` or an `OrderRequest` and returns an `Order`, a `List<Order>`, or throws `Exceptions`.
+Our Java code still has **zero knowledge of HTTP**: it receives a `String` or an `OrderRequest` and returns an `Order`, a `List<Order>`, or throws `OrderException`.
 
 ### Advantages of this distribution
 
@@ -1068,10 +1070,10 @@ OrdersHandler                (co.edu.escuelaing.http — knows HTTP and AWS)
 OrderService                 (co.edu.escuelaing — plain Java, unchanged)
       |
       v
-Order / List<Order> / Exceptions
+Order / List<Order> / OrderException
 ```
 
-`OrdersHandler` implements `RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>`. It is the **only** class that imports AWS or Jackson; `Order`, `OrderRequest`, `OrderService` and `Exceptions` import neither.
+`OrdersHandler` implements `RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>`. It is the **only** class that imports AWS or Jackson; `Order`, `OrderRequest`, `OrderService` and `OrderException` import neither.
 
 | Request | Adapter does | Calls |
 |---|---|---|
@@ -1086,13 +1088,13 @@ Error translation (in one `switch`):
 
 | Thrown | HTTP | `error` |
 |---|---|---|
-| `Exceptions` with `ORDER_NOT_FOUND` | 404 | `ORDER_NOT_FOUND` |
-| `Exceptions` with `INVALID_*` | 400 | the same code (`INVALID_QUANTITY`, …) |
+| `OrderException` with `ORDER_NOT_FOUND` | 404 | `ORDER_NOT_FOUND` |
+| `OrderException` with `INVALID_*` | 400 | the same code (`INVALID_QUANTITY`, …) |
 | Jackson `JsonProcessingException` (malformed JSON, wrong field type) | 400 | `INVALID_REQUEST` |
 | any other `RuntimeException` | 500 | `INTERNAL_ERROR` (details only in the CloudWatch log) |
 
 Changes needed outside the adapter:
-- `Exceptions.getDetail()` returns the message **without** the `CODE: ` prefix. The prefix is kept because Architecture A still depends on it.
+- `OrderException.getDetail()` returns the message **without** the `CODE: ` prefix. The prefix is kept because Architecture A still depends on it.
 - `pom.xml` now includes `aws-lambda-java-core`, `aws-lambda-java-events` and `jackson-databind`, plus the **maven-shade-plugin**. Lambda needs those libraries inside the JAR, so it grew from ~12 KB to ~3.4 MB (a "fat" JAR, as anticipated in Checkpoint 1).
 
 Because the handler is a normal Java class, the whole HTTP layer is tested **locally**. `OrdersHandlerTest` builds `APIGatewayProxyRequestEvent` objects in memory and checks status codes, headers and bodies, with no AWS needed. At the end of Part V there were 14 HTTP tests (31 in total); after section 17 there are 19 (42 in total).
@@ -1221,7 +1223,7 @@ This project was developed with **Claude Code** (Claude Opus) running as a codin
 | Phase | Developer | Assistant |
 |---|---|---|
 | API contract and README questions | Reviewed and accepted the design | Drafted the contract, error format and answers |
-| Part I — business logic | **Wrote** `Order`, `OrderRequest`, `OrderService`, `Exceptions` | Reviewed them over several rounds and pointed out bugs; the developer fixed them (see below) |
+| Part I — business logic | **Wrote** `Order`, `OrderRequest`, `OrderService`, `Exceptions` (now `OrderException`) | Reviewed them over several rounds and pointed out bugs; the developer fixed them (see below) |
 | Unit tests | Requested them | Wrote `OrderServiceTest` and the Maven/JUnit setup |
 | Lambda + API Gateway (Parts II–IV) | **Configured everything in the AWS console**, took the screenshots, ran the tests | Gave step-by-step instructions, diagnosed errors from logs and `curl` output, verified the public endpoints with `curl`, documented the results |
 | Part V — proxy adapter | Configured the second API and Lambda | Designed and implemented `OrdersHandler` and its tests, and found and fixed its `Location` bug |
@@ -1291,13 +1293,13 @@ Four non-trivial decisions proposed by the assistant during this workshop.
 
 ### Decision 2 — Encoding the error code in the exception message (`CODE: message`)
 
-**Decision made by the agent:** change `Exceptions` so that `getMessage()` returns `ORDER_NOT_FOUND: Order ORD-999 does not exist`, so that API Gateway regexes (`ORDER_NOT_FOUND:.*`, `INVALID_.*`) can choose the status code, and a VTL template can split it into `{error, message}`.
+**Decision made by the agent:** change the domain exception (`Exceptions`, now `OrderException`) so that `getMessage()` returns `ORDER_NOT_FOUND: Order ORD-999 does not exist`, so that API Gateway regexes (`ORDER_NOT_FOUND:.*`, `INVALID_.*`) can choose the status code, and a VTL template can split it into `{error, message}`.
 
 **Why do you think it proposed this?** With non-proxy integration, API Gateway only sees `errorMessage`, not the exception's enum field. Free-text messages ("Order with id X was not Found") would have needed fragile regexes per message.
 
 **Do you agree with it?** It works and was pragmatic, but it is a **leaky design**. A domain class now formats its messages for a transport layer it should not know about. The coupling is invisible to the compiler: renaming an enum value silently turns a 400 into a 500. Only one unit test (`shouldPrefixErrorMessageWithErrorCode`) protects it. Later, the proxy adapter needed `getDetail()` precisely to get the message *without* the prefix, which shows the prefix was not a domain concern.
 
-**What alternative could have been used?** Keep the domain message clean and add a thin Lambda wrapper in Architecture A that catches `Exceptions` and rethrows an exception whose message is the code. Or use **separate exception classes** (`OrderNotFoundException`, `InvalidOrderException`) and match on `errorType` in a single response template with `#if`.
+**What alternative could have been used?** Keep the domain message clean and add a thin Lambda wrapper in Architecture A that catches `OrderException` and rethrows an exception whose message is the code. Or use **separate exception classes** (`OrderNotFoundException`, `InvalidOrderException`) and match on `errorType` in a single response template with `#if`.
 
 **What did you finally implement and why?** The prefix, plus `getDetail()` for Architecture B. It was the smallest change that made Architecture A meet the contract, and its cost is documented in Checkpoint 3.
 
@@ -1486,7 +1488,7 @@ flowchart LR
             subgraph APP["Application logic — co.edu.escuelaing"]
                 direction TB
                 S["OrderService<br/>create · get · findByCustomer · delete"]
-                D["Order · OrderRequest · Exceptions"]
+                D["Order · OrderRequest · OrderException"]
             end
         end
 
@@ -1498,7 +1500,7 @@ flowchart LR
     RT -->|"3 · APIGatewayProxyRequestEvent"| H
     H -->|"4 · String id / customerId / OrderRequest"| S
     S --- D
-    S -.->|"5 · Order / List&lt;Order&gt; / throws Exceptions"| H
+    S -.->|"5 · Order / List&lt;Order&gt; / throws OrderException"| H
     H -.->|"6 · APIGatewayProxyResponseEvent"| RT
     RT -.->|"7 · {statusCode, headers, body}"| APIGW
     APIGW -.->|"8 · HTTP status + JSON"| Client
@@ -1518,7 +1520,7 @@ flowchart LR
 | API Gateway | **Yes**, it is an AWS service | Routing to the function and the HTTP endpoint. |
 | Lambda Java runtime | **Yes**, it is part of AWS Lambda | Converts the JSON event into Java objects and back. |
 | `OrdersHandler` (HTTP adapter) | **Yes**: `aws-lambda-java-core`, `aws-lambda-java-events`, Jackson | It is the only class that knows the API Gateway event format and HTTP. |
-| `OrderService`, `Order`, `OrderRequest`, `Exceptions` | **No**: only `java.util` | Business logic. Runs unchanged in JUnit and in Lambda. |
+| `OrderService`, `Order`, `OrderRequest`, `OrderException` | **No**: only `java.util` | Business logic. Runs unchanged in JUnit and in Lambda. |
 
 ### Compile-time dependencies
 
@@ -1534,7 +1536,7 @@ flowchart TB
         H["OrdersHandler"]
     end
     subgraph CORE["co.edu.escuelaing — plain Java"]
-        S["OrderService"] --> D["Order · OrderRequest · Exceptions"]
+        S["OrderService"] --> D["Order · OrderRequest · OrderException"]
     end
     H --> L1
     H --> L2
