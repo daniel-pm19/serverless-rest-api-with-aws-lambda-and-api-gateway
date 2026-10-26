@@ -78,6 +78,14 @@ class OrderServiceTest {
     }
 
     @Test
+    void shouldPrefixErrorMessageWithErrorCode() {
+        // API Gateway maps errors to HTTP status codes by matching this prefix
+        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder("ORD-999"));
+
+        assertEquals("ORDER_NOT_FOUND: Order ORD-999 does not exist", ex.getMessage());
+    }
+
+    @Test
     void shouldRejectNullOrderId() {
         Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder(null));
 

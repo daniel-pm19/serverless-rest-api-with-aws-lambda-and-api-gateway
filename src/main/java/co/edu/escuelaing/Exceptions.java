@@ -13,7 +13,7 @@ public class Exceptions extends Exception {
     private final InnerExceptions type;
 
     public Exceptions(InnerExceptions type, String message){
-        super(message);
+        super(type + ": " + message);
         this.type = type;
     }
 

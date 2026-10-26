@@ -52,7 +52,7 @@ public class OrderService {
         }
 
         if (order == null) {
-            throw new Exceptions(InnerExceptions.ORDER_NOT_FOUND, "Order with id " + id + " was not Found");
+            throw new Exceptions(InnerExceptions.ORDER_NOT_FOUND, "Order " + id + " does not exist");
         }
 
         return order;
