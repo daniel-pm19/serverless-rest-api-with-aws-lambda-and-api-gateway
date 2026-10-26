@@ -4,6 +4,38 @@ A small **Order Management API** built with Java 17 and Maven, designed to be de
 
 The application logic is written in plain Java first (no HTTP, no AWS classes, no Spring Boot, no web server), so it can be tested locally with JUnit before any infrastructure is involved.
 
+### Quick start
+
+```bash
+mvn test      # 42 unit tests (business logic + HTTP adapter), no AWS needed
+mvn package   # target/serverless-rest-api-with-aws-lambda-and-api-gateway-1.0-SNAPSHOT.jar (shaded)
+
+API=https://0lx1iz642k.execute-api.us-east-1.amazonaws.com/dev     # final API (proxy integration)
+curl -i -X POST $API/orders -H "Content-Type: application/json" \
+     -d '{"customerId":"CUST-42","product":"MacBook Air","quantity":1}'   # 201
+curl -i $API/orders/ORD-43                                              # 200
+curl -i "$API/orders?customerId=CUST-42"                                # 200
+curl -i -X DELETE $API/orders/ORD-44                                    # 204
+curl -i $API/orders/ORD-999                                             # 404
+```
+
+Demo video: [https://youtu.be/SnaeQFPZY9A](https://youtu.be/SnaeQFPZY9A). Final architecture: see the [diagram in section 19](#19-final-architecture-diagram). How to reproduce the deployment: [section 20](#20-reproducing-the-deployment-and-deliverables).
+
+### Contents
+
+| # | Section | Workshop part |
+|---|---------|---------------|
+| 1–2 | [API contract](#1-api-design-contract) and [design questions](#2-design-questions) | 4 |
+| 3–4 | [Plain Java application](#3-part-i--plain-java-application), [Checkpoint 1](#4-checkpoint-1) | 5–6 |
+| 5–6 | [Java function on Lambda](#5-part-ii--java-function-on-aws-lambda), JSON ↔ Java investigation, [Checkpoint 2](#6-checkpoint-2--architecture-diagram) | 7 |
+| 7 | [API Gateway path extraction](#7-part-iii--http-interface-with-api-gateway-get-ordersid) | 8 |
+| 8–10 | [Mapping templates](#8-part-iv--api-gateway-mapping-non-proxy-integration), [HTTP semantics](#9-http-semantics--test-results), [Checkpoint 3](#10-checkpoint-3--who-is-responsible-for-what) | 9–10 |
+| 11–13 | [Proxy integration](#11-part-v--lambda-proxy-integration), [HTTP adapter](#12-http-adapter), [HTTP responses](#13-http-responses--test-results-architecture-b) | 11–13 |
+| 14 | [Comparison of the two architectures](#14-comparing-the-two-architectures) | 14 |
+| 15–16 | [AI-assisted development](#15-ai-assisted-development), [criticizing the agent](#16-criticizing-the-agent) | 15–16 |
+| 17–18 | [DELETE extension](#17-final-challenge--delete-ordersid), [final API](#18-final-api) | 17–18 |
+| 19–22 | [Final diagram](#19-final-architecture-diagram), [reproduction and deliverables](#20-reproducing-the-deployment-and-deliverables), [demonstration](#21-demonstration), [where each responsibility lives](#22-the-main-question-where-should-each-responsibility-live) | 19–23 |
+
 ---
 
 ## 1. API Design (Contract)
@@ -230,13 +262,15 @@ It must **not** expose internal details such as stack traces, class names or inf
 ```
 serverless-rest-api-with-aws-lambda-and-api-gateway/
 ├── pom.xml
+├── README.md
+├── docs/                       # screenshots + DELETE prediction
+├── events/                     # captured API Gateway proxy event
 └── src/
     ├── main/java/co/edu/escuelaing/
     │   ├── Order.java          # Domain entity: id, customerId, product, quantity
     │   ├── OrderRequest.java   # Data needed to create an order (no id)
-    │   ├── OrderService.java   # Business logic: create, get by id, find by customer
+    │   ├── OrderService.java   # Business logic: create, get, find by customer, delete
     │   ├── Exceptions.java     # Domain exception with a type (ORDER_NOT_FOUND, INVALID_*...)
-    │   ├── Main.java
     │   └── http/
     │       └── OrdersHandler.java   # HTTP adapter for Lambda proxy integration (Part V)
     └── test/java/co/edu/escuelaing/
@@ -1428,3 +1462,219 @@ There are three levels, depending on *where* the failure happens:
 3. **Failures before Lambda.** Throttling (`429`) or an unknown route (`403 Missing Authentication Token`) are produced by API Gateway and also use its own format. The same Gateway Responses mechanism applies.
 
 **Conclusion.** Every error that reaches our Java code follows the `{error, message}` contract and never exposes internals. Errors produced outside it (Lambda platform failures and API Gateway's own rejections) use AWS's default format, until Gateway Responses are configured. That is the remaining edge of the responsibility split analyzed in Checkpoint 3 and section 14: even in the proxy architecture, API Gateway still owns some error responses.
+
+---
+
+## 19. Final architecture diagram
+
+### Runtime view: request and response flow (Architecture B, the final API)
+
+Solid arrows are the request path; dashed arrows are the response path. **Orange** components are AWS services or depend on AWS libraries; **green** components are ordinary Java with no AWS dependency.
+
+```mermaid
+flowchart LR
+    Client(["Client<br/>curl / browser / Postman"])
+
+    subgraph AWS["AWS Cloud — us-east-1"]
+        direction LR
+        APIGW["Amazon API Gateway<br/>REST API orders-api-proxy · stage dev<br/>/orders ANY · /orders/{id} ANY<br/>Lambda proxy integration"]
+
+        subgraph LAMBDA["AWS Lambda — serverless-rest-api-orders-proxy (Java 17)"]
+            direction LR
+            RT["Lambda Java runtime<br/>JSON ⇄ APIGatewayProxy*Event"]
+            H["HTTP adapter<br/>co.edu.escuelaing.http.OrdersHandler<br/>routing · params · status codes · headers · JSON"]
+            subgraph APP["Application logic — co.edu.escuelaing"]
+                direction TB
+                S["OrderService<br/>create · get · findByCustomer · delete"]
+                D["Order · OrderRequest · Exceptions"]
+            end
+        end
+
+        CW[("CloudWatch Logs")]
+    end
+
+    Client -->|"1 · HTTPS request"| APIGW
+    APIGW -->|"2 · proxy event (JSON)"| RT
+    RT -->|"3 · APIGatewayProxyRequestEvent"| H
+    H -->|"4 · String id / customerId / OrderRequest"| S
+    S --- D
+    S -.->|"5 · Order / List&lt;Order&gt; / throws Exceptions"| H
+    H -.->|"6 · APIGatewayProxyResponseEvent"| RT
+    RT -.->|"7 · {statusCode, headers, body}"| APIGW
+    APIGW -.->|"8 · HTTP status + JSON"| Client
+    H -.->|"unexpected errors"| CW
+
+    classDef aws fill:#ff9900,stroke:#b36b00,color:#1a1a1a
+    classDef java fill:#2e9e5b,stroke:#1d6b3c,color:#ffffff
+    classDef client fill:#4a6fa5,stroke:#2e4a73,color:#ffffff
+    class APIGW,RT,H,CW aws
+    class S,D java
+    class Client client
+```
+
+| Component | Depends on AWS? | Why |
+|---|---|---|
+| Client | No | Any HTTP client. |
+| API Gateway | **Yes**, it is an AWS service | Routing to the function and the HTTP endpoint. |
+| Lambda Java runtime | **Yes**, it is part of AWS Lambda | Converts the JSON event into Java objects and back. |
+| `OrdersHandler` (HTTP adapter) | **Yes**: `aws-lambda-java-core`, `aws-lambda-java-events`, Jackson | It is the only class that knows the API Gateway event format and HTTP. |
+| `OrderService`, `Order`, `OrderRequest`, `Exceptions` | **No**: only `java.util` | Business logic. Runs unchanged in JUnit and in Lambda. |
+
+### Compile-time dependencies
+
+The dependency rule of the design is that dependencies point **inwards**. The adapter depends on the application; the application depends on nothing.
+
+```mermaid
+flowchart TB
+    subgraph AWSDEP["AWS / third-party libraries"]
+        L1["aws-lambda-java-core<br/>aws-lambda-java-events"]
+        L2["jackson-databind"]
+    end
+    subgraph HTTP["co.edu.escuelaing.http — infrastructure"]
+        H["OrdersHandler"]
+    end
+    subgraph CORE["co.edu.escuelaing — plain Java"]
+        S["OrderService"] --> D["Order · OrderRequest · Exceptions"]
+    end
+    H --> L1
+    H --> L2
+    H --> S
+    H --> D
+
+    classDef aws fill:#ff9900,stroke:#b36b00,color:#1a1a1a
+    classDef java fill:#2e9e5b,stroke:#1d6b3c,color:#ffffff
+    class L1,L2,H aws
+    class S,D java
+```
+
+No arrow leaves the green box: the business classes import nothing from AWS, Jackson or HTTP. Architecture A (non-proxy, still deployed at `sat85gcah9`) is shown in [section 8](#8-part-iv--api-gateway-mapping-non-proxy-integration).
+
+---
+
+## 20. Reproducing the deployment and deliverables
+
+### Build and test
+
+Requirements: Java 17 and Maven 3.
+
+```bash
+mvn test        # 42 tests: 23 OrderServiceTest + 19 OrdersHandlerTest
+mvn package     # shaded JAR with the AWS libraries and Jackson:
+                # target/serverless-rest-api-with-aws-lambda-and-api-gateway-1.0-SNAPSHOT.jar
+```
+
+### Architecture B — proxy integration (final API)
+
+1. **Lambda.** Create a function `serverless-rest-api-orders-proxy`: runtime **Java 17**, 512 MB. Upload the JAR. Set the handler to:
+   ```
+   co.edu.escuelaing.http.OrdersHandler::handleRequest
+   ```
+2. **API Gateway.** Create a **REST API** (`orders-api-proxy`, Regional):
+   - resource `/orders`, method **ANY** → Lambda function, **Lambda proxy integration: ON**, function above;
+   - resource `/orders/{id}`, method **ANY** → same configuration.
+
+   Nothing else: no mapping templates, no integration or method responses.
+3. **Deploy API** → stage `dev`.
+4. Test with the requests in the [quick start](#quick-start) or [section 18](#18-final-api).
+
+Updating the code only requires uploading a new JAR to the function. API Gateway does not change, as the DELETE extension showed.
+
+### Architecture A — mapping templates (kept for comparison)
+
+| Lambda function | Handler |
+|---|---|
+| `serverless-rest-api-get-order` | `co.edu.escuelaing.OrderService::getOrder` |
+| `serverless-rest-api-find-orders` | `co.edu.escuelaing.OrderService::getOrdersByCustomer` |
+| `serverless-rest-api-create-order` | `co.edu.escuelaing.OrderService::createOrder` |
+
+All three use the same JAR, Java 17. The REST API configuration is documented step by step in:
+- [section 7](#7-part-iii--http-interface-with-api-gateway-get-ordersid): resources and the path-parameter template;
+- [section 8](#8-part-iv--api-gateway-mapping-non-proxy-integration): the query and body templates, integration responses with regexes, error templates and method responses.
+
+Each step has screenshots in `docs/`.
+
+### Deliverables checklist
+
+| Required | Where |
+|---|---|
+| Complete Java source code | `src/main/java` — business logic in `co.edu.escuelaing`, adapter in `co.edu.escuelaing.http` |
+| Maven configuration | `pom.xml` (JUnit 5, Surefire, AWS Lambda libraries, Jackson, Shade) |
+| Unit tests | `src/test/java` — 42 tests, run with `mvn test` |
+| Lambda handler(s) | `OrdersHandler` (proxy); `OrderService` methods (non-proxy) |
+| API Gateway configuration / reproduction | This section, plus sections 7, 8, 11 and their screenshots |
+| Example requests and responses | Sections 5, 7, 9, 13, 17, 18; event sample in `events/` |
+| Architecture diagram | Section 19 (final), section 8 (Architecture A), section 6 (Lambda only) |
+| Answers to the architectural questions | Sections 2, 4, 6, 10, 14, 22 |
+| Analysis of the AI assistant's decisions | Sections 15, 16 and 17 |
+| Build and test instructions | [Quick start](#quick-start) and this section |
+
+### How the evaluation criteria are covered
+
+| Criterion | Evidence |
+|---|---|
+| API design | Contract in section 1: resources `/orders` and `/orders/{id}`, the query parameter as a filter, the 200/201/204/400/404/500 table |
+| Functionality | `curl` results against both deployed APIs (sections 9, 13, 17, 18) |
+| Java design | Business logic without AWS imports; adapter isolated in `http` (sections 12, 19) |
+| Testing | 42 local tests, including every HTTP status of the adapter and the internal-error case |
+| AWS integration | Lambda used directly with JSON (Part II), with mapping templates (A) and with proxy integration (B) |
+| Architecture | Checkpoint 3 (section 10), comparison (section 14), responsibilities (section 22) |
+| AI-assisted development | Sections 15–17: what was delegated, critique of four decisions and of two wrong instructions, prediction vs proposal |
+| Understanding | Every investigation was verified against the deployed behavior, including the failures (orphan 200 response, missing deploy, proxy switch off, `Location` without stage) |
+
+---
+
+## 21. Demonstration
+
+📹 **Video:** [https://youtu.be/SnaeQFPZY9A](https://youtu.be/SnaeQFPZY9A)
+
+The video follows this order:
+
+| # | What is shown | Command / action |
+|---|---|---|
+| 1 | Unit tests run locally | `mvn test` → `Tests run: 42, Failures: 0` |
+| 2 | Packaging | `mvn package` → shaded JAR in `target/` |
+| 3 | Direct Lambda invocation | Lambda console → `serverless-rest-api-get-order` → Test with event `"ORD-42"` |
+| 4 | Successful POST | `curl -i -X POST $API/orders ...` → `201` + `Location` |
+| 5 | Successful GET | `curl -i $API/orders/ORD-43` → `200` |
+| 6 | 404 | `curl -i $API/orders/ORD-999` → `404 ORDER_NOT_FOUND` |
+| 7 | 400 | `curl -i -X POST ... "quantity":0` → `400 INVALID_QUANTITY` |
+| 8 | DELETE extension | `DELETE /orders/ORD-44` → `204`, then `GET /orders/ORD-44` → `404` |
+| 9 | Architecture diagram | Section 19 of this README rendered on GitHub |
+
+---
+
+## 22. The main question: where should each responsibility live?
+
+Throughout the workshop I tried to answer, for every piece of behavior: *is this API Gateway, the Lambda/HTTP adapter, or application logic, and why?* This is where I ended up, and why.
+
+| Responsibility | Where it lives | Why there |
+|---|---|---|
+| TLS, public endpoint, stages | **API Gateway** | Pure infrastructure. No code should deal with it. |
+| Choosing which function handles a request | **API Gateway** (`/orders`, `/orders/{id}` → one Lambda) | It is the entry point. A coarse route per resource is enough. |
+| Rejecting paths that do not exist at all | **API Gateway** | The request never needs to cost a Lambda invocation. |
+| Authentication, throttling (if added) | **API Gateway** | Cross-cutting edge concerns, the same for every operation. |
+| Choosing the operation by method (GET/POST/DELETE) and returning 405 | **HTTP adapter** | It depends on the API contract, which changes with the code. It should be versioned and tested with it. |
+| Reading path/query parameters and the body | **HTTP adapter** | It is translation from HTTP to Java. In Architecture A this was VTL in the console; in Java it is testable and refactorable. |
+| Parsing JSON and rejecting malformed bodies (400) | **HTTP adapter** | Malformed input is an HTTP-level problem; the domain should receive well-typed objects. |
+| Validating business rules (quantity > 0, required fields) | **Application logic** (`OrderRequest.validate()`) | These rules are true no matter how the request arrives: JUnit, Lambda direct invocation, mapping template or proxy. |
+| Creating, finding, deleting orders; generating ids | **Application logic** (`OrderService`) | This *is* the domain. The DELETE extension confirmed it: the logic went here without touching the infrastructure. |
+| "This order does not exist" | **Application logic** (throws `ORDER_NOT_FOUND`) | The domain knows *what* happened… |
+| "…therefore 404" / "deleted, therefore 204" / "created, therefore 201 + Location" | **HTTP adapter** | …but only the HTTP layer knows *how to say it* in HTTP. The domain never mentions status codes. |
+| The error body format `{error, message}` and hiding internal details | **HTTP adapter** | One translation point guarantees a consistent contract and that stack traces never leak. |
+| Errors that happen before or outside our code (Lambda crash, throttling, unknown route) | **API Gateway** (Gateway Responses) | Our code never runs in those cases, so only the gateway can format them. |
+| Storage | **Should be** a repository behind `OrderService` (e.g. DynamoDB) | The in-memory list was only acceptable for the workshop. Lambda environments are ephemeral and not shared, as Parts II–IV demonstrated. |
+
+**My position.** The design I can defend is **B with a clear layering**:
+- API Gateway does edge work that is the same for every request;
+- a thin, tested adapter owns everything that is specific to HTTP;
+- the application logic owns everything that would still be true if HTTP disappeared tomorrow.
+
+Architecture A taught me that putting HTTP behavior into API Gateway works, but hides it in untested console configuration, couples it to message strings, and spreads one request across many screens. Architecture B moves that behavior into code. That code depends on AWS, so I kept it in its own package and verified that no AWS import reaches the domain.
+
+**What I would change next:**
+- replace the in-memory list with a repository interface plus a DynamoDB implementation;
+- describe the API Gateway and Lambda configuration as code (SAM or CDK) instead of console clicks;
+- configure Gateway Responses so that even AWS-generated errors follow the `{error, message}` contract;
+- if the API grew well beyond a handful of routes, replace the hand-written router with a small routing abstraction.
+
+A working endpoint was never the goal. The goal was a solution where I can point at any behavior and explain why it lives where it does.
