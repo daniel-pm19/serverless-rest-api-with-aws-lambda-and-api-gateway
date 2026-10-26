@@ -87,8 +87,15 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
         Order order = service.createOrder(request);
 
         APIGatewayProxyResponseEvent response = json(201, order);
-        response.getHeaders().put("Location", "/orders/" + order.getId());
+        response.getHeaders().put("Location", requestPath(event) + "/" + order.getId());
         return response;
+    }
+
+    // Path as the client used it, including the stage (e.g. /dev/orders), so Location resolves correctly
+    private static String requestPath(APIGatewayProxyRequestEvent event) {
+        APIGatewayProxyRequestEvent.ProxyRequestContext context = event.getRequestContext();
+        String path = context != null && context.getPath() != null ? context.getPath() : event.getPath();
+        return path.replaceAll("/+$", "");
     }
 
     private APIGatewayProxyResponseEvent getOrder(String id) throws Exceptions, JsonProcessingException {

@@ -236,10 +236,16 @@ serverless-rest-api-with-aws-lambda-and-api-gateway/
     │   ├── OrderRequest.java   # Data needed to create an order (no id)
     │   ├── OrderService.java   # Business logic: create, get by id, find by customer
     │   ├── Exceptions.java     # Domain exception with a type (ORDER_NOT_FOUND, INVALID_*...)
-    │   └── Main.java
+    │   ├── Main.java
+    │   └── http/
+    │       └── OrdersHandler.java   # HTTP adapter for Lambda proxy integration (Part V)
     └── test/java/co/edu/escuelaing/
-        └── OrderServiceTest.java
+        ├── OrderServiceTest.java
+        └── http/
+            └── OrdersHandlerTest.java
 ```
+
+The `http` package was added in Part V. Everything outside it is the plain-Java application from Part I.
 
 ### Application operations
 
@@ -921,3 +927,205 @@ Our Java code still has **zero knowledge of HTTP**: it receives a `String` or an
 ### Conclusion
 
 This design puts **all HTTP knowledge in API Gateway** and **all business knowledge in Java**. That keeps the Java code clean, portable and easy to test. The price is a significant amount of untested, unversioned, platform-specific logic in API Gateway configuration, coupled to the Java code through the text of error messages. It works well for a small API with few endpoints. As the API grows, the cost of maintaining mapping templates per method grows with it. Lambda **proxy integration** makes the opposite trade-off: it moves those responsibilities into the code.
+
+---
+
+## 11. Part V — Lambda Proxy Integration
+
+A **second, independent API** was created so that both architectures stay deployed and can be compared side by side.
+
+| | Architecture A (Parts III–IV) | Architecture B (Part V) |
+|--|--|--|
+| REST API | `sat85gcah9` | `orders-api-proxy` (`0lx1iz642k`) |
+| Base URL | `https://sat85gcah9.execute-api.us-east-1.amazonaws.com/dev` | `https://0lx1iz642k.execute-api.us-east-1.amazonaws.com/dev` |
+| Resources | `/orders` (GET, POST), `/orders/{id}` (GET) | `/orders` (**ANY**), `/orders/{id}` (**ANY**) |
+| Integration | Custom (non-proxy), mapping templates | **Lambda proxy integration** |
+| Lambda functions | 3 (one per operation) | **1**: `serverless-rest-api-orders-proxy` |
+| Handler | `OrderService::getOrder`, `::getOrdersByCustomer`, `::createOrder` | `co.edu.escuelaing.http.OrdersHandler::handleRequest` |
+| Integration / method responses | 1 default + 3 error responses per method, with VTL templates | None |
+
+The methods use `ANY`, so that every HTTP method reaches Lambda and the adapter itself decides between `405 Method Not Allowed` and a real operation.
+
+### The proxy event
+
+With proxy integration, API Gateway does not transform anything. It sends Lambda **the whole HTTP request** as a JSON event, and the Java runtime maps it to `APIGatewayProxyRequestEvent` (from `aws-lambda-java-events`). Where each piece of information appears:
+
+| Information | Field in the event | Example (`GET /dev/orders/ORD-42`) | Example (`GET /dev/orders?customerId=CUST-42`) |
+|---|---|---|---|
+| HTTP method | `httpMethod` (also `requestContext.httpMethod`) | `"GET"` | `"GET"` |
+| Path | `path`, without the stage. `requestContext.path` includes the stage | `"/orders/ORD-42"`. `requestContext.path`: `"/dev/orders/ORD-42"` | `"/orders"` |
+| Matched resource | `resource` (the template, not the value) | `"/orders/{id}"` | `"/orders"` |
+| Path parameters | `pathParameters` | `{"id": "ORD-42"}` | `null` |
+| Query parameters | `queryStringParameters` (and `multiValueQueryStringParameters`) | `null` | `{"customerId": "CUST-42"}` |
+| Headers | `headers` (and `multiValueHeaders`) | `{"Accept": "*/*", "Host": "...", "User-Agent": "curl/..."}` | same |
+| Request body | `body`, **as a string**, not as JSON. `isBase64Encoded` says if it is encoded | `null` | `null`. For POST: `"{\"customerId\":\"CUST-42\",...}"` |
+| Stage, request id, caller IP… | `requestContext` (`stage`, `requestId`, `identity.sourceIp`, …) | `"stage": "dev"` | same |
+
+Absent sections arrive as `null`, not as empty maps. For example, `queryStringParameters` is `null` when there is no query string. The adapter has to handle that.
+
+The response must follow the same proxy contract. Lambda returns `{statusCode, headers, body}`, with `body` again a **string**, and API Gateway turns it into the real HTTP response.
+
+### What happens if proxy integration is not enabled
+
+On the first deployment, the **Lambda proxy integration** switch was accidentally left off on both `ANY` methods. Every request then returned:
+
+```
+HTTP/2 200
+{"statusCode":404,"headers":{"Content-Type":"application/json"},"body":"{\"error\":\"NOT_FOUND\",\"message\":\"Route null does not exist\"}"}
+```
+
+Both halves of the proxy contract were broken:
+- **Request:** API Gateway forwarded only the (empty) request body, so the adapter received an event with no `httpMethod` or `path`. Hence "Route **null**".
+- **Response:** API Gateway did not interpret the `{statusCode, headers, body}` object. It returned it as plain JSON inside an HTTP 200.
+
+This shows that the adapter and the proxy integration form **one contract**: the same Lambda behaves completely differently depending on one checkbox in the console.
+
+---
+
+## 12. HTTP Adapter
+
+```
+API Gateway (proxy)
+      |
+      |  APIGatewayProxyRequestEvent
+      v
+OrdersHandler                (co.edu.escuelaing.http — knows HTTP and AWS)
+  - routing by method + path
+  - pathParameters / queryStringParameters / body (Jackson)
+  - exception → status code + {error, message}
+  - headers (Content-Type, Location)
+      |
+      |  String id / String customerId / OrderRequest
+      v
+OrderService                 (co.edu.escuelaing — plain Java, unchanged)
+      |
+      v
+Order / List<Order> / Exceptions
+```
+
+`OrdersHandler` implements `RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>`. It is the **only** class that imports AWS or Jackson; `Order`, `OrderRequest`, `OrderService` and `Exceptions` import neither.
+
+| Request | Adapter does | Calls |
+|---|---|---|
+| `POST /orders` | parses `body` with Jackson into `OrderRequest` | `createOrder(request)` → **201** + `Location` |
+| `GET /orders` | reads `queryStringParameters.customerId` (null-safe) | `getOrdersByCustomer(customerId)` → **200** |
+| `GET /orders/{id}` | reads `pathParameters.id` | `getOrder(id)` → **200** |
+| other method on a known path | — | **405** `METHOD_NOT_ALLOWED` |
+| unknown path (reaching the Lambda) | — | **404** `NOT_FOUND` |
+
+Error translation (in one `switch`):
+
+| Thrown | HTTP | `error` |
+|---|---|---|
+| `Exceptions` with `ORDER_NOT_FOUND` | 404 | `ORDER_NOT_FOUND` |
+| `Exceptions` with `INVALID_*` | 400 | the same code (`INVALID_QUANTITY`, …) |
+| Jackson `JsonProcessingException` (malformed JSON, wrong field type) | 400 | `INVALID_REQUEST` |
+| any other `RuntimeException` | 500 | `INTERNAL_ERROR` (details only in the CloudWatch log) |
+
+Changes needed outside the adapter:
+- `Exceptions.getDetail()` returns the message **without** the `CODE: ` prefix. The prefix is kept because Architecture A still depends on it.
+- `pom.xml` now includes `aws-lambda-java-core`, `aws-lambda-java-events` and `jackson-databind`, plus the **maven-shade-plugin**. Lambda needs those libraries inside the JAR, so it grew from ~12 KB to ~3.4 MB (a "fat" JAR, as anticipated in Checkpoint 1).
+
+Because the handler is a normal Java class, the whole HTTP layer is tested **locally**. `OrdersHandlerTest` builds `APIGatewayProxyRequestEvent` objects in memory and checks status codes, headers and bodies: 14 tests, no AWS needed. `mvn test` now runs **31 tests** (17 business + 14 HTTP).
+
+---
+
+## 13. HTTP Responses — test results (Architecture B)
+
+All requests made with `curl -i` against `https://0lx1iz642k.execute-api.us-east-1.amazonaws.com/dev`.
+
+| # | Request | Status | Body / headers |
+|---|---------|--------|----------------|
+| 1 | `GET /orders/ORD-42` | **200** | `{"id":"ORD-42","customerId":"CUST-42","product":"MacBook Air","quantity":1}` |
+| 2 | `GET /orders/ORD-999` | **404** | `{"error":"ORDER_NOT_FOUND","message":"Order ORD-999 does not exist"}` |
+| 3 | `GET /orders?customerId=CUST-42` | **200** | `[{"id":"ORD-42",...},{"id":"ORD-43",...}]` |
+| 4 | `GET /orders?customerId=CUST-100` | **200** | `[]` |
+| 5 | `GET /orders` (no `customerId`) | **400** | `{"error":"INVALID_CUSTOMER","message":"Customer id cannot be blank or null"}` |
+| 6 | `POST /orders` valid | **201** | `location: /orders/ORD-4`, `{"id":"ORD-4","customerId":"CUST-42","product":"MacBook Air","quantity":1}` |
+| 7 | `POST /orders` `"quantity":0` | **400** | `{"error":"INVALID_QUANTITY","message":"Quantity must be > 0"}` |
+| 8 | `POST /orders` without `product` | **400** | `{"error":"INVALID_PRODUCT","message":"Product cannot be null or blank"}` |
+| 9 | `POST /orders` `{malformed` | **400** | `{"error":"INVALID_REQUEST","message":"Request body is not valid JSON for an order"}` |
+| 10 | `POST /orders` `"quantity":"two"` | **400** | `{"error":"INVALID_REQUEST","message":"Request body is not valid JSON for an order"}` |
+| 11 | `POST /orders` (`CUST-9`, Keyboard) then `GET /orders/ORD-5` | **201** then **200** | `location: /orders/ORD-5`, then the same order |
+| 12 | `DELETE /orders/ORD-42` | **405** | `{"error":"METHOD_NOT_ALLOWED","message":"DELETE is not allowed on /orders/{id}"}` |
+| 13 | `PUT /orders` | **405** | `{"error":"METHOD_NOT_ALLOWED","message":"PUT is not allowed on /orders"}` |
+| 14 | `GET /customers` | **403** | `{"message":"Missing Authentication Token"}` (from API Gateway) |
+
+```
+$ curl -i -X POST $API/orders -H "Content-Type: application/json" \
+       -d '{"customerId":"CUST-9","product":"Keyboard","quantity":2}'
+HTTP/2 201
+content-type: application/json
+location: /orders/ORD-5
+
+{"id":"ORD-5","customerId":"CUST-9","product":"Keyboard","quantity":2}
+
+$ curl -i $API/orders/ORD-5
+HTTP/2 200
+content-type: application/json
+
+{"id":"ORD-5","customerId":"CUST-9","product":"Keyboard","quantity":2}
+```
+
+### Observations
+
+- **Cases 9, 10, 12 and 13 now follow the contract.** In Architecture A they returned API Gateway's `{"message": "Could not process payload"}`, a **500** for `"two"`, and `403` for unsupported methods. Here they reach Java, where they are handled like any other error.
+- **Case 11: create-then-read works.** With one Lambda for all operations, `POST` and `GET` share the same `OrderService` instance, as long as both requests reach the same warm execution environment. In Architecture A this was impossible, because each operation was a different function. The data is still **not persistent**: a cold start or a second concurrent environment would not see `ORD-5`.
+- **Case 14: unknown routes are still answered by API Gateway**, because `/customers` is not a configured resource and never reaches the Lambda. The adapter's own `404 NOT_FOUND` only applies to paths routed to it. A `/{proxy+}` resource would send *everything* to the adapter.
+- **Deployment propagation:** right after redeploying with proxy enabled, two requests (cases 4 and 8) still got the old non-proxy response for a few seconds. Repeated requests were all correct.
+
+### Should `POST` return a `Location` header?
+
+Yes. RFC 9110 says a `201 Created` response should identify the new resource, and `Location` is the standard way to do it. The client gets the order's URL without having to know how URLs are built. With the proxy adapter it is one line of Java; in Architecture A it required a `$context.responseOverride` VTL expression that we did not configure.
+
+The deployed version returned `location: /orders/ORD-5`. That is a root-relative path **without the stage**, so a client resolving it against `https://0lx1iz642k.execute-api.us-east-1.amazonaws.com/dev/orders` would end up at `https://…/orders/ORD-5`, which does not exist. The adapter was fixed to build `Location` from `requestContext.path`, which contains the path exactly as the client used it (`/dev/orders`). The result is `/dev/orders/ORD-5`, and it still works behind a custom domain without a stage. This is covered by the test `locationShouldIncludeTheStageWhenApiGatewayProvidesIt`.
+
+---
+
+## 14. Comparing the two architectures
+
+| | **A — API Gateway transformation** | **B — Proxy + HTTP adapter** |
+|---|---|---|
+| Lambda functions | 3 | 1 |
+| API Gateway objects configured | 3 methods, 3 request templates, ~9 integration responses with regex + VTL, ~10 method responses | 2 `ANY` methods with a checkbox |
+| Java infrastructure code | 0 lines (handlers point at `OrderService` directly) | `OrdersHandler` (~150 lines) + 3 dependencies + shade plugin |
+| Where status codes live | regexes on `errorMessage` + method responses, in the console | one `switch` and `json(201, …)` calls, in Java |
+| HTTP behavior tested by `mvn test` | none | 14 tests |
+| Errors in the contract format | only those from Lambda; API Gateway's own errors and runtime deserialization errors do not match | all requests that reach Lambda |
+| JAR | ~12 KB, no dependencies | ~3.4 MB fat JAR |
+
+**Which approach required more API Gateway configuration?**
+**A**, by far. Every method needed its own request template, its own method responses (200/201, 400, 404, 500) and its own integration responses, each with a regex and a VTL template. Several of those had to be repeated. B needed two `ANY` methods and the proxy checkbox; nothing else.
+
+**Which approach required more Java infrastructure code?**
+**B.** A had zero infrastructure code: Lambda called `OrderService` methods directly. B added `OrdersHandler` (routing, parameter extraction, JSON parsing, error translation, headers), the AWS events and Jackson dependencies, and the shade plugin.
+
+**Which was easier to test locally?**
+**B.** Its whole HTTP behavior (status codes, headers, error bodies, routing, malformed JSON) is covered by `OrdersHandlerTest` and runs in under a second with `mvn test`. In A, only the business logic could be tested locally. Every HTTP mistake (the orphan `200` method response, the forgotten deploy, the `"two"` → 500 case) was only found after deploying and calling the real API.
+
+**Where are HTTP status codes defined in each approach?**
+- **A:** in API Gateway configuration. The *default integration response* gives 200/201, and *Lambda error regexes* on `errorMessage` map errors to 400/404/500. The Java code only influences them indirectly, through the text prefix of its exception messages.
+- **B:** in Java, in `OrdersHandler`. `statusFor(...)` maps the exception type, and the success paths call `json(200, …)` / `json(201, …)`. API Gateway passes `statusCode` through unchanged.
+
+**What happens if the API grows from 3 operations to 30?**
+- **A** grows linearly in console configuration: about 30 request templates, 90–120 integration responses with regex and VTL, and potentially 30 Lambda functions with 30 deployments of the same JAR, each with its own cold start. All of it is untested and not in git unless exported as OpenAPI or written in infrastructure-as-code. The coupling through message prefixes would also have to be kept consistent across all of them.
+- **B** grows in Java: more routes in the adapter. With 30 routes, the hand-written `if`/`switch` router would become a problem itself; at that point you would split it into several handlers per resource or use a small routing library. But that code is versioned, reviewed, refactorable and unit-tested. API Gateway can stay at a few `ANY` resources, or a single `/{proxy+}`.
+
+**Which approach makes the Java business logic cleaner?**
+Both leave the business logic **equally clean**. `OrderService`, `Order` and `OrderRequest` are identical in both and know nothing about HTTP. The difference is elsewhere:
+- **A** made the domain *slightly* aware of its transport: the `CODE: message` format exists only so that API Gateway regexes can parse it.
+- **B** keeps that concern in the adapter, which uses the exception's enum type directly.
+
+So B's business logic is marginally cleaner. The price is that the *project* now contains infrastructure code, isolated in the `http` package.
+
+**Which approach would be easier for another developer to understand?**
+**B**, for most developers. The full request → response path can be read top to bottom in one Java file, with tests documenting every case. In A, the behavior of a single request is spread across a resource tree, a VTL request template, a Java method, a list of regexes and a VTL response template, all in different console screens. A newcomer needs to know API Gateway's mapping model just to find out why a request returns 404. A is easier only for someone who already thinks in API Gateway terms and wants to see the HTTP contract without reading code.
+
+**Which approach would you choose for a larger system? Why?**
+**B (proxy + thin adapter)**, keeping the separation we built: an `http` adapter layer around a plain-Java core.
+- The HTTP behavior is code. It is versioned, reviewed, unit-tested, and can be refactored as the API grows.
+- Errors are consistent, because everything that reaches Lambda goes through one translation point. A's errors came from three different layers.
+- It is portable. Only the adapter depends on API Gateway's event format; moving to an HTTP API, an ALB or a container means writing a new adapter, not rewriting VTL.
+- Fewer functions and deployments: one artifact per bounded context instead of one per operation.
+
+That choice still keeps some of A's strengths, by assigning API Gateway what it does best at the edge: routing to the right function, authentication, throttling, and optionally request validation. What should not live there is business-dependent behavior written in VTL. A remains a reasonable option for very small, stable APIs, or when API Gateway integrates directly with other AWS services without any Lambda. In those cases mapping templates are the only place the transformation can live.

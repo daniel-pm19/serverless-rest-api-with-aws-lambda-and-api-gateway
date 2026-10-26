@@ -94,6 +94,20 @@ class OrdersHandlerTest {
     }
 
     @Test
+    void locationShouldIncludeTheStageWhenApiGatewayProvidesIt() {
+        APIGatewayProxyRequestEvent event = new APIGatewayProxyRequestEvent()
+                .withHttpMethod("POST")
+                .withPath("/orders")
+                .withRequestContext(new APIGatewayProxyRequestEvent.ProxyRequestContext().withPath("/dev/orders"))
+                .withBody("{\"customerId\":\"CUST-42\",\"product\":\"MacBook Air\",\"quantity\":1}");
+
+        APIGatewayProxyResponseEvent response = handler.handleRequest(event, null);
+
+        assertEquals(201, response.getStatusCode());
+        assertEquals("/dev/orders/ORD-4", response.getHeaders().get("Location"));
+    }
+
+    @Test
     void createdOrderCanBeRetrievedThroughTheSameHandler() {
         call("POST", "/orders", null, null, "{\"customerId\":\"CUST-9\",\"product\":\"iPad\",\"quantity\":3}");
 
