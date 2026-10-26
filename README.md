@@ -532,7 +532,7 @@ flowchart TD
             Order["Order<br/>(id, customerId, product, quantity)"]
             Ex["OrderException<br/>(INVALID_QUANTITY, INVALID_CUSTOMER, ...)"]
         end
-        Ser["Serialize Order → JSON<br/>(getters: getId → &quot;id&quot;, ...)"]
+        Ser["Serialize Order → JSON<br/>(getters: getId → 'id', ...)"]
         Err["Build error JSON<br/>errorMessage / errorType / stackTrace"]
     end
     Result["Response JSON<br/>{ id, customerId, product, quantity }"]
@@ -749,8 +749,8 @@ flowchart LR
     Client["HTTP client<br/>(curl / browser)"]
     subgraph APIGW["API Gateway — REST API, stage dev"]
         direction TB
-        R1["GET /orders/{id}<br/>template: &quot;$input.params('id')&quot;"]
-        R2["GET /orders?customerId=<br/>template: &quot;$input.params('customerId')&quot;"]
+        R1["GET /orders/{id}<br/>template: $input.params('id') as a JSON string"]
+        R2["GET /orders?customerId=<br/>template: $input.params('customerId') as a JSON string"]
         R3["POST /orders<br/>template: $input.json('$')"]
         IR["Integration responses<br/>regex on errorMessage → 400 / 404 / 500<br/>templates → {error, message}"]
     end
@@ -760,8 +760,8 @@ flowchart LR
         L3["serverless-rest-api-create-order<br/>OrderService::createOrder"]
     end
     Client -->|HTTP| R1 & R2 & R3
-    R1 -->|"&quot;ORD-42&quot;"| L1
-    R2 -->|"&quot;CUST-42&quot;"| L2
+    R1 -->|"JSON string ORD-42"| L1
+    R2 -->|"JSON string CUST-42"| L2
     R3 -->|"{customerId, product, quantity}"| L3
     L1 & L2 & L3 -->|"Order / List / error"| IR
     IR -->|"HTTP status + JSON"| Client
