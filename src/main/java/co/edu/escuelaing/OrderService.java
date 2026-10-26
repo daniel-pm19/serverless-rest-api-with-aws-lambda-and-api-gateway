@@ -9,17 +9,22 @@ public class OrderService {
 
     private List<Order> orders;
 
-    public OrderService(){
+    public OrderService() {
         this.orders = new ArrayList<>();
     }
 
-    public Order createOrder(OrderRequest request) {
+    public Order createOrder(OrderRequest request) throws Exceptions {
+        if (request == null) {
+            throw new Exceptions(InnerExceptions.INVALID_ORDER, "Request body cannot be null");
+        }
+
+        request.validate();
+
         Order newOrder = new Order(
                 generateOrderId(),
                 request.getCustomerId(),
                 request.getProduct(),
-                request.getQuantity()
-        );
+                request.getQuantity());
 
         orders.add(newOrder);
         return newOrder;
@@ -38,7 +43,7 @@ public class OrderService {
             }
         }
 
-        if(order == null){
+        if (order == null) {
             throw new Exceptions(InnerExceptions.ORDER_NOT_FOUND, "Order with id " + id + " was not Found");
         }
 
@@ -48,7 +53,7 @@ public class OrderService {
 
     public List<Order> getOrdersByCustomer(String id) throws Exceptions {
         if (id == null || id.isBlank()) {
-            throw new Exceptions(InnerExceptions. INVALID_CUSTOMER, "Customer id cannot be blank or null");
+            throw new Exceptions(InnerExceptions.INVALID_CUSTOMER, "Customer id cannot be blank or null");
         }
 
         List<Order> customerOrders = new ArrayList<>();

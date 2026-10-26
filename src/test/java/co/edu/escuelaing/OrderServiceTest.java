@@ -144,4 +144,16 @@ class OrderServiceTest {
 
         assertEquals(InnerExceptions.INVALID_QUANTITY, ex.getExceptions());
     }
+
+    @Test
+    void shouldRejectRequestBuiltWithSettersMissingCustomer() {
+        OrderRequest request = new OrderRequest();
+        request.setProduct("MacBook Air");
+        request.setQuantity(1);
+
+        Exceptions ex = assertThrows(Exceptions.class, () -> service.createOrder(request));
+
+        assertEquals(InnerExceptions.INVALID_CUSTOMER, ex.getExceptions());
+    }
+
 }

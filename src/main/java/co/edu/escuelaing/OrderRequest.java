@@ -16,6 +16,8 @@ public class OrderRequest {
         this.quantity = validateQuantity(quantity);
     }
 
+    public OrderRequest() {}
+
     public String getCustomerId() {
         return this.customerId;
     }
@@ -28,6 +30,24 @@ public class OrderRequest {
         return this.quantity;
     }
 
+    public void setCustomerId(String newCustomerId) {
+        this.customerId = newCustomerId;
+    }
+
+    public void setProduct(String newProduct) {
+        this.product = newProduct;
+    }
+
+    public void setQuantity(int newQuantity) {
+        this.quantity = newQuantity;
+    }
+
+    public void validate() throws Exceptions {
+        validateCustomerId(customerId);
+        validateProduct(product);
+        validateQuantity(quantity);
+    }   
+
     private String validateCustomerId(String id) throws Exceptions {
         if (id == null || id.isBlank()) {
             throw new Exceptions(InnerExceptions.INVALID_CUSTOMER, "Customer id cannot be null or blank");
@@ -37,7 +57,7 @@ public class OrderRequest {
     }
 
     private int validateQuantity(int quantity) throws Exceptions {
-        if(quantity <= 0){
+        if (quantity <= 0) {
             throw new Exceptions(InnerExceptions.INVALID_QUANTITY, "Quantity must be > 0");
         }
 
