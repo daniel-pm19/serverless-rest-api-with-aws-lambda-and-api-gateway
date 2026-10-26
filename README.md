@@ -259,15 +259,15 @@ Tests cover:
 - retrieval of an existing order;
 - behavior when an order does not exist;
 - searching orders by customer;
-- invalid input (null/blank ids, invalid create requests).
+- invalid input (null/blank ids, invalid create requests);
+- requests built the way Lambda builds them (no-arg constructor + setters), with missing fields;
+- the sample orders loaded by the no-arg constructor (see Part III).
 
-- requests built the way Lambda builds them (no-arg constructor + setters), with missing fields.
-
-Result: `Tests run: 15, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+Result: `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
 
 ![mvn test output](docs/tests-passing.png)
 
-*(Screenshot taken before the Lambda-path test was added, when the suite had 14 tests.)*
+*(Screenshot taken earlier, when the suite had 14 tests.)*
 
 ---
 
@@ -518,3 +518,173 @@ JSON  {"id":"ORD-1","customerId":"CUST-42","product":"MacBook Air","quantity":1}
 ```
 
 At this stage there is still **no HTTP** anywhere: the function is invoked with a raw JSON event, and errors are Lambda errors, not status codes. Exposing it over HTTP is the job of API Gateway in the next part.
+
+---
+
+## 7. Part III — HTTP Interface with API Gateway (`GET /orders/{id}`)
+
+### Architecture
+
+```
+Client (browser / curl)
+   |
+   | HTTP  GET /dev/orders/ORD-42
+   v
+API Gateway (REST API, stage "dev")
+   |   resource /orders/{id}, method GET
+   |   integration request: mapping template extracts {id}
+   |
+   | Lambda event:  "ORD-42"        (just a JSON string)
+   v
+Lambda  serverless-rest-api-get-order
+   |   handler co.edu.escuelaing.OrderService::getOrder
+   v
+Java application  OrderService.getOrder(String id)  ->  Order
+```
+
+### Changes to the Java application
+
+None in the business logic. `OrderService.getOrder(String id)` is used exactly as it was written in Part I. It receives the id as a plain `String` and knows nothing about paths, HTTP methods or headers.
+
+The only change was **sample data**. Every Lambda function has its own execution environments, and a new environment starts with an empty list. The orders created by `serverless-rest-api-create-order` are therefore not visible to the get function, so there would be nothing to retrieve. As the workshop allows predefined data:
+
+- the no-arg constructor (the one Lambda uses) loads three sample orders:
+
+  | id       | customerId | product     | quantity |
+  |----------|------------|-------------|----------|
+  | `ORD-42` | `CUST-42`  | MacBook Air | 1        |
+  | `ORD-43` | `CUST-42`  | Magic Mouse | 2        |
+  | `ORD-44` | `CUST-7`   | iPad        | 1        |
+
+- a new constructor `OrderService(List<Order> initialOrders)` lets the unit tests start from an empty list.
+
+### Configuration
+
+| Component | Setting |
+|-----------|---------|
+| Lambda function | `serverless-rest-api-get-order`, Java 17, same JAR as Part II |
+| Lambda handler | `co.edu.escuelaing.OrderService::getOrder` |
+| API type | **REST API**. HTTP APIs do not support mapping templates for Lambda integrations; they only offer proxy integration. |
+| Resources | `/` → `/orders` → `/{id}` |
+| Method | `GET` on `/orders/{id}` |
+| Integration type | Lambda function, **Lambda proxy integration disabled** (custom integration) |
+| Integration request mapping template | Content-Type `application/json`: `"$util.escapeJavaScript($input.params('id'))"` |
+| Integration response | Default (no customization yet) |
+| Stage | `dev` |
+| Invoke URL | `https://sat85gcah9.execute-api.us-east-1.amazonaws.com/dev` |
+
+![API Gateway resources](docs/apigw-resources.png)
+![Integration request mapping template](docs/apigw-mapping-template.png)
+![Deploy API to the dev stage](docs/apigw-deploy-stage.png)
+
+### Evidence
+
+#### 1. The Lambda alone, with a JSON string as event
+
+Before connecting API Gateway, the function was tested in the Lambda console with the event `"ORD-42"`. The event is only a JSON string, not an object. The runtime deserialized it into the `String id` parameter of `getOrder`:
+
+```json
+{ "id": "ORD-42", "customerId": "CUST-42", "product": "MacBook Air", "quantity": 1 }
+```
+
+![Lambda test event](docs/get-lambda-input.png)
+![Lambda test result](docs/get-lambda-output.png)
+
+#### 2. API Gateway console test
+
+Test of `GET /orders/{id}` with path parameter `id = ORD-42`: status **200**, body `{"id":"ORD-42","customerId":"CUST-42","product":"MacBook Air","quantity":1}`.
+
+The execution log shows how the request was processed:
+
+```
+HTTP Method: GET, Resource Path: /orders/ORD-42
+Method request path: {id=ORD-42}
+Method request query string: {}
+Method request headers: {}
+Method request body before transformations:
+Endpoint request URI: https://lambda.us-east-1.amazonaws.com/2015-03-31/functions/arn:aws:lambda:us-east-1:<account-id>:function:serverless-rest-api-get-order/invocations
+```
+
+![API Gateway test method](docs/apigw-test-method.png)
+![API Gateway test result](docs/apigw-test-result.png)
+
+#### 3. Deployed API called over HTTP
+
+| Request | Status | Body |
+|---------|--------|------|
+| `GET /dev/orders/ORD-42`  | 200 | `{"id":"ORD-42","customerId":"CUST-42","product":"MacBook Air","quantity":1}` |
+| `GET /dev/orders/ORD-43`  | 200 | `{"id":"ORD-43","customerId":"CUST-42","product":"Magic Mouse","quantity":2}` |
+| `GET /dev/orders/ORD-999` | **200** | `{"errorMessage":"Order with id ORD-999 was not Found","errorType":"co.edu.escuelaing.Exceptions","stackTrace":[...]}` |
+
+![Browser ORD-42](docs/apigw-browser-ord-42.png)
+![Browser ORD-43](docs/apigw-browser-ord-43.png)
+![Browser ORD-999](docs/apigw-browser-ord-999.png)
+
+The status codes were checked with `curl -i`:
+
+```
+$ curl -i https://sat85gcah9.execute-api.us-east-1.amazonaws.com/dev/orders/ORD-42
+HTTP/2 200
+content-type: application/json
+
+{"id":"ORD-42","customerId":"CUST-42","product":"MacBook Air","quantity":1}
+
+$ curl -i https://sat85gcah9.execute-api.us-east-1.amazonaws.com/dev/orders/ORD-999
+HTTP/2 200
+content-type: application/json
+
+{"errorMessage":"Order with id ORD-999 was not Found","errorType":"co.edu.escuelaing.Exceptions","stackTrace":["co.edu.escuelaing.OrderService.getOrder(OrderService.java:55)", ...]}
+```
+
+### Investigation: how does API Gateway extract `{id}` and transform the request?
+
+*Investigated with an LLM, then checked against the deployed API.*
+
+With a **custom (non-proxy) integration**, a REST API processes each request in four stages. Each stage is configured separately:
+
+```
+Method request  ->  Integration request  ->  Lambda  ->  Integration response  ->  Method response
+```
+
+**1. Method request: matching the route and capturing the path parameter.** The resource `/orders/{id}` declares a **path parameter** named `id`. When `GET /orders/ORD-42` arrives, API Gateway matches the URL against the resource tree and binds `id = ORD-42`. The log line `Method request path: {id=ORD-42}` shows exactly this. The value is only stored in the request context at this point; nothing has been sent to Lambda yet.
+
+**2. Integration request: building the Lambda event with a mapping template.** With proxy integration disabled, API Gateway does not forward the HTTP request. Instead it **builds a new payload** from a *mapping template*, written in **VTL (Velocity Template Language)**. The template is chosen by the request's `Content-Type`. When the request has no `Content-Type`, which is always the case for a browser `GET`, API Gateway uses the `application/json` template.
+
+Our template is:
+
+```
+"$util.escapeJavaScript($input.params('id'))"
+```
+
+- `$input.params('id')` returns the value of the request parameter `id`. It searches the **path**, then the **query string**, then the **headers**, in that order. A more explicit form is `$input.params().path.get('id')`.
+- `$util.escapeJavaScript(...)` escapes characters such as `"` and `\`. Without it, an id containing a quote would produce invalid JSON.
+- The surrounding quotes make the result a **JSON string**.
+
+For `GET /orders/ORD-42` the template produces the payload `"ORD-42"`. The client sent no body at all (`Method request body before transformations:` is empty), so the body Lambda receives was **created entirely by API Gateway**.
+
+**3. Lambda.** The Lambda Java runtime deserializes the event `"ORD-42"` into the `String` parameter of `getOrder`, exactly as in Part II. The Java code receives `ORD-42` and nothing else: no URL, no method, no headers.
+
+**4. Integration response and method response: building the HTTP response.** The value returned by Lambda (`Order` serialized to JSON) goes through the integration response. No response template is configured, so it is passed through **unchanged** with the default status **200** and `Content-Type: application/json`.
+
+**What a custom integration could also do.** The same mapping mechanism could build richer events, for example `{"id": "$input.params('id')", "requestedBy": "$context.identity.sourceIp"}`. It could map query strings and headers, or reshape the Lambda result in the integration response. All of that lives in API Gateway configuration, not in Java.
+
+**Comparison with proxy integration.** With *Lambda proxy integration* enabled, there is no mapping template. API Gateway sends the **whole HTTP request** as a large JSON event (`httpMethod`, `path`, `pathParameters`, `queryStringParameters`, `headers`, `body`, `requestContext`, …). Lambda must then return an object with `statusCode`, `headers` and `body`. The Java code would have to understand HTTP, through an adapter class such as one that takes an `APIGatewayProxyRequestEvent`. With the custom integration, that responsibility stays in API Gateway and `OrderService` stays plain Java.
+
+#### Verification against the deployed API
+
+| Claim | Evidence |
+|-------|----------|
+| API Gateway extracts `{id}` from the path | Test log: `Method request path: {id=ORD-42}` for resource path `/orders/ORD-42`. |
+| The Lambda event is built by the mapping template, not sent by the client | Test log: `Method request body before transformations:` is **empty**, yet Lambda received the id. |
+| The event is a plain JSON string that maps to `String id` | `getOrder(String)` returned the right order. The same function tested directly with the event `"ORD-42"` returned the same result. If Lambda had received the full HTTP request (proxy), deserializing an object into a `String` would have failed. |
+| Different path values reach the Java code | `ORD-42` and `ORD-43` returned their respective orders. |
+| The Java application does not know about HTTP | `OrderService.getOrder` was not modified. It still takes only a `String`. |
+| Without integration-response configuration, everything becomes `200` | `curl -i .../orders/ORD-999` returned **`HTTP/2 200`** with the Lambda error document as the body. |
+
+### Problems found (to address in the next part)
+
+1. **A missing order returns `200 OK`, not `404 Not Found`.** With a custom integration, a Lambda error is not an HTTP error by itself. API Gateway needs an **integration response** whose *Lambda error regex* matches the `errorMessage` (e.g. `.*not Found.*`) and maps it to `404`, plus a response template that builds `{"error": "ORDER_NOT_FOUND", "message": "..."}`. Making error messages start with the error code (e.g. `ORDER_NOT_FOUND: Order ORD-999 does not exist`) would make those regexes more reliable.
+2. **The response leaks internal details.** The body exposes `errorType` (a Java class name) and a `stackTrace` with source file names and line numbers. The error contract in section 1 says clients should receive only `error` and `message`.
+3. **The error body does not follow the contract.** It uses Lambda's format (`errorMessage` / `errorType`) instead of `error` / `message`.
+
+All three are API Gateway configuration problems, not Java problems: the Java code correctly reports *what* went wrong through the exception, and it is the integration layer's job to translate that into HTTP.
