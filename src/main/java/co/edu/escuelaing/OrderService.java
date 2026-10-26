@@ -10,7 +10,15 @@ public class OrderService {
     private List<Order> orders;
 
     public OrderService() {
-        this.orders = new ArrayList<>();
+        this(List.of(
+                new Order("ORD-42", "CUST-42", "MacBook Air", 1),
+                new Order("ORD-43", "CUST-42", "Magic Mouse", 2),
+                new Order("ORD-44", "CUST-7", "iPad", 1)
+        ));
+    }
+
+    public OrderService(List<Order> initialOrders) {
+        this.orders = new ArrayList<>(initialOrders);
     }
 
     public Order createOrder(OrderRequest request) throws Exceptions {

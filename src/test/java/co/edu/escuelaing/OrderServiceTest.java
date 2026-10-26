@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -20,7 +21,20 @@ class OrderServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new OrderService();
+        service = new OrderService(new ArrayList<>());
+    }
+
+    // sample data (used by Lambda through the no-arg constructor)
+
+    @Test
+    void shouldLoadSampleOrdersWithDefaultConstructor() throws Exception {
+        OrderService withSamples = new OrderService();
+
+        Order order = withSamples.getOrder("ORD-42");
+
+        assertEquals("CUST-42", order.getCustomerId());
+        assertEquals("MacBook Air", order.getProduct());
+        assertEquals(2, withSamples.getOrdersByCustomer("CUST-42").size());
     }
 
     // createOrder
