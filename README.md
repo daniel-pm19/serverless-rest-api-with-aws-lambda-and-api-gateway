@@ -961,6 +961,40 @@ With proxy integration, API Gateway does not transform anything. It sends Lambda
 | Request body | `body`, **as a string**, not as JSON. `isBase64Encoded` says if it is encoded | `null` | `null`. For POST: `"{\"customerId\":\"CUST-42\",...}"` |
 | Stage, request id, caller IP… | `requestContext` (`stage`, `requestId`, `identity.sourceIp`, …) | `"stage": "dev"` | same |
 
+#### Captured example event
+
+A real event, captured from the API Gateway console **Test** of `/orders/{id}` → `ANY`, is saved in [`events/proxy-get-order-test-invoke.json`](events/proxy-get-order-test-invoke.json). It is the `Endpoint request body after transformations` log line. The account id, the IAM user/role identifiers and the access key id were redacted before committing it.
+
+```json
+{
+  "resource": "/orders/{id}",
+  "path": "/orders/id=ORD-42",
+  "httpMethod": "GET",
+  "headers": null,
+  "multiValueHeaders": null,
+  "queryStringParameters": null,
+  "multiValueQueryStringParameters": null,
+  "pathParameters": { "id": "id=ORD-42" },
+  "stageVariables": null,
+  "requestContext": {
+    "resourcePath": "/orders/{id}",
+    "httpMethod": "GET",
+    "path": "/orders/{id}",
+    "stage": "test-invoke-stage",
+    "requestId": "961a6303-564c-4f30-be5a-9a41052b3656",
+    "identity": { "sourceIp": "test-invoke-source-ip", "...": "..." },
+    "apiId": "0lx1iz642k",
+    "...": "..."
+  },
+  "body": null,
+  "isBase64Encoded": false
+}
+```
+
+What this event shows:
+- **The id field of the console test was filled with `id=ORD-42` instead of `ORD-42`.** API Gateway does not interpret path values; it copies the raw segment into `pathParameters.id`. The adapter passed it unchanged to `getOrder`, which correctly answered `404 ORDER_NOT_FOUND: Order id=ORD-42 does not exist`.
+- **A console test is not identical to a real request.** `headers` is `null` (the console sends none), the stage is `test-invoke-stage`, and `requestContext.path` holds the resource *template* (`/orders/{id}`). In a real request through the `dev` URL, `requestContext.path` holds the actual path with the stage. This was confirmed by the `Location: /dev/orders/ORD-4` header built from it (see section 13).
+
 Absent sections arrive as `null`, not as empty maps. For example, `queryStringParameters` is `null` when there is no query string. The adapter has to handle that.
 
 The response must follow the same proxy contract. Lambda returns `{statusCode, headers, body}`, with `body` again a **string**, and API Gateway turns it into the real HTTP response.
@@ -1078,7 +1112,18 @@ content-type: application/json
 
 Yes. RFC 9110 says a `201 Created` response should identify the new resource, and `Location` is the standard way to do it. The client gets the order's URL without having to know how URLs are built. With the proxy adapter it is one line of Java; in Architecture A it required a `$context.responseOverride` VTL expression that we did not configure.
 
-The deployed version returned `location: /orders/ORD-5`. That is a root-relative path **without the stage**, so a client resolving it against `https://0lx1iz642k.execute-api.us-east-1.amazonaws.com/dev/orders` would end up at `https://…/orders/ORD-5`, which does not exist. The adapter was fixed to build `Location` from `requestContext.path`, which contains the path exactly as the client used it (`/dev/orders`). The result is `/dev/orders/ORD-5`, and it still works behind a custom domain without a stage. This is covered by the test `locationShouldIncludeTheStageWhenApiGatewayProvidesIt`.
+The first deployed version returned `location: /orders/ORD-5`. That is a root-relative path **without the stage**, so a client resolving it against `https://0lx1iz642k.execute-api.us-east-1.amazonaws.com/dev/orders` would end up at `https://…/orders/ORD-5`, which does not exist. The adapter was fixed to build `Location` from `requestContext.path`, which contains the path exactly as the client used it (`/dev/orders`). The result is `/dev/orders/ORD-5`, and it still works behind a custom domain without a stage. This is covered by the test `locationShouldIncludeTheStageWhenApiGatewayProvidesIt`. After redeploying the JAR:
+
+```
+$ curl -i -X POST $API/orders -H "Content-Type: application/json" \
+       -d '{"customerId":"CUST-7","product":"Monitor","quantity":1}'
+HTTP/2 201
+location: /dev/orders/ORD-4
+
+{"id":"ORD-4","customerId":"CUST-7","product":"Monitor","quantity":1}
+```
+
+The id is `ORD-4` again because uploading new code started a fresh execution environment, which is the in-memory state behavior seen in Part II.
 
 ---
 

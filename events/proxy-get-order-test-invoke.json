@@ -1,0 +1,47 @@
+{
+  "resource": "/orders/{id}",
+  "path": "/orders/id=ORD-42",
+  "httpMethod": "GET",
+  "headers": null,
+  "multiValueHeaders": null,
+  "queryStringParameters": null,
+  "multiValueQueryStringParameters": null,
+  "pathParameters": {
+    "id": "id=ORD-42"
+  },
+  "stageVariables": null,
+  "requestContext": {
+    "resourceId": "npc3yy",
+    "resourcePath": "/orders/{id}",
+    "httpMethod": "GET",
+    "extendedRequestId": "F3oirGH_oAMFjxA=",
+    "requestTime": "26/Oct/2026:20:41:01 +0000",
+    "path": "/orders/{id}",
+    "accountId": "123456789012",
+    "protocol": "HTTP/1.1",
+    "stage": "test-invoke-stage",
+    "domainPrefix": "testPrefix",
+    "requestTimeEpoch": 1793047261475,
+    "requestId": "961a6303-564c-4f30-be5a-9a41052b3656",
+    "identity": {
+      "cognitoIdentityPoolId": null,
+      "cognitoIdentityId": null,
+      "apiKey": "test-invoke-api-key",
+      "principalOrgId": null,
+      "cognitoAuthenticationType": null,
+      "userArn": "arn:aws:sts::123456789012:assumed-role/<role>/<user>",
+      "apiKeyId": "test-invoke-api-key-id",
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:158.0) Gecko/20100101 Firefox/158.0",
+      "accountId": "123456789012",
+      "caller": "<redacted>",
+      "sourceIp": "test-invoke-source-ip",
+      "accessKey": "<redacted>",
+      "cognitoAuthenticationProvider": null,
+      "user": "<redacted>"
+    },
+    "domainName": "testPrefix.testDomainName",
+    "apiId": "0lx1iz642k"
+  },
+  "body": null,
+  "isBase64Encoded": false
+}
