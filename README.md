@@ -37,12 +37,16 @@ Every error returned by the API uses the same JSON shape:
 
 Error codes used by the API:
 
-| Error code          | HTTP status | When                                                        |
-|---------------------|-------------|-------------------------------------------------------------|
-| `INVALID_REQUEST`   | 400         | Body is missing, malformed JSON, or a field is invalid       |
-| `MISSING_PARAMETER` | 400         | A required path/query parameter is missing or blank          |
-| `ORDER_NOT_FOUND`   | 404         | No order exists with the given id                            |
-| `INTERNAL_ERROR`    | 500         | Any unexpected failure (details are logged, not exposed)     |
+| Error code         | HTTP status | When                                                          |
+|--------------------|-------------|---------------------------------------------------------------|
+| `INVALID_CUSTOMER` | 400         | `customerId` is missing or blank (body or query parameter)    |
+| `INVALID_PRODUCT`  | 400         | `product` is missing or blank                                 |
+| `INVALID_QUANTITY` | 400         | `quantity` is missing or not greater than 0                   |
+| `INVALID_ORDER`    | 400         | The order id is blank, or the request body is missing         |
+| `ORDER_NOT_FOUND`  | 404         | No order exists with the given id                             |
+| `INTERNAL_ERROR`   | 500         | Any unexpected failure (details are logged, not exposed)      |
+
+The codes are the values of the Java enum `Exceptions.InnerExceptions` (except `INTERNAL_ERROR`), so the code a client sees is the code the application raised.
 
 ---
 
@@ -55,7 +59,7 @@ Error codes used by the API:
 | **Path parameters**   | — |
 | **Query parameters**  | — |
 | **Success status**    | `201 Created` |
-| **Response headers**  | `Location: /orders/{id}` |
+| **Response headers**  | `Location: /orders/{id}` (planned, not configured yet) |
 
 **Request body**
 
@@ -89,10 +93,10 @@ Validation rules:
 
 | Status | `error`           | Example `message`                         |
 |--------|-------------------|-------------------------------------------|
-| 400    | `INVALID_REQUEST` | `customerId is required`                  |
-| 400    | `INVALID_REQUEST` | `quantity must be greater than 0`         |
-| 400    | `INVALID_REQUEST` | `Request body is not valid JSON`          |
-| 500    | `INTERNAL_ERROR`  | `Unexpected error while creating order`   |
+| 400    | `INVALID_CUSTOMER` | `Customer id cannot be null or blank`             |
+| 400    | `INVALID_PRODUCT`  | `Product cannot be null or blank`                 |
+| 400    | `INVALID_QUANTITY` | `Quantity must be > 0`                            |
+| 500    | `INTERNAL_ERROR`   | `Unexpected error while processing the request`   |
 
 ---
 
@@ -122,9 +126,9 @@ Validation rules:
 
 | Status | `error`             | Example `message`                    |
 |--------|---------------------|--------------------------------------|
-| 400    | `MISSING_PARAMETER` | `Order id cannot be null or blank`   |
+| 400    | `INVALID_ORDER`     | `Order id cannot be null or blank`   |
 | 404    | `ORDER_NOT_FOUND`   | `Order ORD-999 does not exist`       |
-| 500    | `INTERNAL_ERROR`    | `Unexpected error while retrieving order` |
+| 500    | `INTERNAL_ERROR`    | `Unexpected error while processing the request` |
 
 ---
 
@@ -164,8 +168,8 @@ If the customer has no orders, the response is still `200 OK` with an **empty ar
 
 | Status | `error`             | Example `message`                        |
 |--------|---------------------|------------------------------------------|
-| 400    | `MISSING_PARAMETER` | `customerId query parameter is required` |
-| 500    | `INTERNAL_ERROR`    | `Unexpected error while searching orders` |
+| 400    | `INVALID_CUSTOMER`  | `Customer id cannot be blank or null` |
+| 500    | `INTERNAL_ERROR`    | `Unexpected error while processing the request` |
 
 ---
 
@@ -261,9 +265,10 @@ Tests cover:
 - searching orders by customer;
 - invalid input (null/blank ids, invalid create requests);
 - requests built the way Lambda builds them (no-arg constructor + setters), with missing fields;
-- the sample orders loaded by the no-arg constructor (see Part III).
+- the sample orders loaded by the no-arg constructor (see Part III);
+- the `CODE: message` format of error messages that API Gateway relies on (see Part IV).
 
-Result: `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+Result: `Tests run: 17, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
 
 ![mvn test output](docs/tests-passing.png)
 
@@ -681,10 +686,238 @@ For `GET /orders/ORD-42` the template produces the payload `"ORD-42"`. The clien
 | The Java application does not know about HTTP | `OrderService.getOrder` was not modified. It still takes only a `String`. |
 | Without integration-response configuration, everything becomes `200` | `curl -i .../orders/ORD-999` returned **`HTTP/2 200`** with the Lambda error document as the body. |
 
-### Problems found (to address in the next part)
+### Problems found (solved in Part IV)
 
 1. **A missing order returns `200 OK`, not `404 Not Found`.** With a custom integration, a Lambda error is not an HTTP error by itself. API Gateway needs an **integration response** whose *Lambda error regex* matches the `errorMessage` (e.g. `.*not Found.*`) and maps it to `404`, plus a response template that builds `{"error": "ORDER_NOT_FOUND", "message": "..."}`. Making error messages start with the error code (e.g. `ORDER_NOT_FOUND: Order ORD-999 does not exist`) would make those regexes more reliable.
 2. **The response leaks internal details.** The body exposes `errorType` (a Java class name) and a `stackTrace` with source file names and line numbers. The error contract in section 1 says clients should receive only `error` and `message`.
 3. **The error body does not follow the contract.** It uses Lambda's format (`errorMessage` / `errorType`) instead of `error` / `message`.
 
 All three are API Gateway configuration problems, not Java problems: the Java code correctly reports *what* went wrong through the exception, and it is the integration layer's job to translate that into HTTP.
+
+---
+
+## 8. Part IV — API Gateway Mapping (non-proxy integration)
+
+All three operations are exposed through the same REST API (`sat85gcah9`, stage `dev`) using **custom (non-proxy) integrations**. Each operation is a separate Lambda function running the **same JAR**; only the handler changes.
+
+### Final architecture
+
+```mermaid
+flowchart LR
+    Client["HTTP client<br/>(curl / browser)"]
+    subgraph APIGW["API Gateway — REST API, stage dev"]
+        direction TB
+        R1["GET /orders/{id}<br/>template: &quot;$input.params('id')&quot;"]
+        R2["GET /orders?customerId=<br/>template: &quot;$input.params('customerId')&quot;"]
+        R3["POST /orders<br/>template: $input.json('$')"]
+        IR["Integration responses<br/>regex on errorMessage → 400 / 404 / 500<br/>templates → {error, message}"]
+    end
+    subgraph Lambdas["AWS Lambda (Java 17, same JAR)"]
+        L1["serverless-rest-api-get-order<br/>OrderService::getOrder"]
+        L2["serverless-rest-api-find-orders<br/>OrderService::getOrdersByCustomer"]
+        L3["serverless-rest-api-create-order<br/>OrderService::createOrder"]
+    end
+    Client -->|HTTP| R1 & R2 & R3
+    R1 -->|"&quot;ORD-42&quot;"| L1
+    R2 -->|"&quot;CUST-42&quot;"| L2
+    R3 -->|"{customerId, product, quantity}"| L3
+    L1 & L2 & L3 -->|"Order / List / error"| IR
+    IR -->|"HTTP status + JSON"| Client
+```
+
+### Change in the Java application: error code in the message
+
+With a non-proxy integration, API Gateway chooses the HTTP status by applying a regular expression (**Lambda error regex**) to the `errorMessage` of a failed invocation. It cannot see the exception's type field. To make that matching reliable, `Exceptions` now puts its error code in front of the message:
+
+```java
+super(type + ": " + message);   // e.g. "ORDER_NOT_FOUND: Order ORD-999 does not exist"
+```
+
+The not-found message was also aligned with the contract (`Order ORD-999 does not exist`). The unit test `shouldPrefixErrorMessageWithErrorCode` fixes this format, because API Gateway now depends on it. Nothing else changed: the Java code still knows nothing about HTTP.
+
+### Configuration
+
+| Method | Lambda (handler) | Integration request template (`application/json`) | Lambda receives |
+|--------|------------------|---------------------------------------------------|-----------------|
+| `GET /orders/{id}` | `serverless-rest-api-get-order` (`OrderService::getOrder`) | `"$util.escapeJavaScript($input.params('id'))"` | `"ORD-42"` |
+| `GET /orders` (query `customerId`) | `serverless-rest-api-find-orders` (`OrderService::getOrdersByCustomer`) | `"$util.escapeJavaScript($input.params('customerId'))"` | `"CUST-42"` |
+| `POST /orders` | `serverless-rest-api-create-order` (`OrderService::createOrder`) | `$input.json('$')` | `{"customerId":"CUST-42","product":"MacBook Air","quantity":1}` |
+
+Design decision: the workshop suggests an event like `{"id": "ORD-42"}`. We send a bare JSON string instead, because `getOrder(String id)` and `getOrdersByCustomer(String customerId)` take a single `String`. A wrapper object would require a new Java class just to carry one field.
+
+If `customerId` is not sent, `$input.params('customerId')` returns an empty string. Lambda receives `""`, and the Java validation rejects it with `INVALID_CUSTOMER`.
+
+**Integration responses** (the same on every method where they apply):
+
+| Lambda error regex | Method response | Response template |
+|--------------------|-----------------|-------------------|
+| *(default — successful invocation)* | `200` for the GETs, **`201`** for POST | none (pass-through) |
+| `ORDER_NOT_FOUND:.*` | `404` (`GET /orders/{id}`) | error template |
+| `INVALID_.*` | `400` | error template |
+| `(?s)(?!ORDER_NOT_FOUND:\|INVALID_).+` | `500` | fixed `INTERNAL_ERROR` template |
+
+In the table above the `|` of the 500 regex is escaped. The actual regex is `(?s)(?!ORDER_NOT_FOUND:|INVALID_).+`: any error that is *not* one of ours.
+
+Error template (400 / 404). It splits `CODE: message` into the contract format and drops `errorType` and `stackTrace`:
+
+```
+#set($msg = $input.path('$.errorMessage'))
+#set($sep = $msg.indexOf(': '))
+#set($start = $sep + 2)
+{
+  "error": "$msg.substring(0, $sep)",
+  "message": "$util.escapeJavaScript($msg.substring($start))"
+}
+```
+
+500 template. It is a fixed message, so nothing internal is exposed:
+
+```
+{
+  "error": "INTERNAL_ERROR",
+  "message": "Unexpected error while processing the request"
+}
+```
+
+![Integration responses with Lambda error regex](docs/apigw-integration-responses.png)
+
+Each status (`201`, `400`, `404`, `500`) also had to be declared under **Method response**:
+
+![Method responses](docs/apigw-method-responses.png)
+ Two configuration mistakes appeared during setup and are worth recording:
+
+- After the `200` method response was deleted on `POST`, the default integration response still pointed to it. Every POST then failed with `Execution failed due to configuration error: Output mapping refers to an invalid method response: 200` → **500**, even though Lambda had created the order.
+- The new methods worked in the console **Test**, but the public URL answered **`403 Missing Authentication Token`** until the API was **deployed again** to `dev`. A stage serves a snapshot of the configuration, not the current draft.
+
+### Console tests
+
+`GET /orders` with the query string `customerId=CUST-42` returned status 200 with the two orders of that customer:
+
+![Test GET /orders?customerId](docs/apigw-test-find-orders.png)
+
+`POST /orders` with a JSON body returned **201**. The resource tree on the left shows the three methods (`GET /orders`, `POST /orders`, `GET /orders/{id}`). The id `ORD-8` reflects earlier test invocations in the same warm Lambda environment.
+
+![Test POST /orders request](docs/apigw-test-post-request.png)
+![Test POST /orders 201](docs/apigw-test-post-201.png)
+
+---
+
+## 9. HTTP Semantics — test results
+
+All requests were made with `curl -i` against `https://sat85gcah9.execute-api.us-east-1.amazonaws.com/dev`. Response headers are trimmed.
+
+| # | Request | Expected | Got | Body |
+|---|---------|----------|-----|------|
+| 1 | `GET /orders/ORD-42` | 200 | **200** | `{"id":"ORD-42","customerId":"CUST-42","product":"MacBook Air","quantity":1}` |
+| 2 | `GET /orders/ORD-999` | 404 | **404** | `{"error":"ORDER_NOT_FOUND","message":"Order ORD-999 does not exist"}` |
+| 3 | `GET /orders?customerId=CUST-42` | 200 | **200** | `[{"id":"ORD-42",...,"product":"MacBook Air"...},{"id":"ORD-43",...,"product":"Magic Mouse"...}]` |
+| 4 | `GET /orders?customerId=CUST-100` | 200 | **200** | `[]` |
+| 5 | `GET /orders` (no `customerId`) | 400 | **400** | `{"error":"INVALID_CUSTOMER","message":"Customer id cannot be blank or null"}` |
+| 6 | `POST /orders` valid body | 201 | **201** | `{"id":"ORD-4","customerId":"CUST-42","product":"MacBook Air","quantity":1}` |
+| 7 | `POST /orders` with `"quantity":0` | 400 | **400** | `{"error":"INVALID_QUANTITY","message":"Quantity must be > 0"}` |
+| 8 | `POST /orders` without `product` | 400 | **400** | `{"error":"INVALID_PRODUCT","message":"Product cannot be null or blank"}` |
+| 9 | `POST /orders` with body `{malformed` | 400 | **400** | `{"message": "Could not process payload"}` ⚠️ |
+| 10 | `POST /orders` with `"quantity":"two"` | 400 | **500** ⚠️ | `{"error":"INTERNAL_ERROR","message":"Unexpected error while processing the request"}` |
+| 11 | `GET /customers` (route does not exist) | 404 | **403** ⚠️ | `{"message":"Missing Authentication Token"}` |
+| 12 | `DELETE /orders/ORD-42` (method not configured) | 405 | **403** ⚠️ | `{"message":"Missing Authentication Token"}` |
+
+Sample of the raw output:
+
+```
+$ curl -i $API/orders/ORD-999
+HTTP/2 404
+content-type: application/json
+
+{
+  "error": "ORDER_NOT_FOUND",
+  "message": "Order ORD-999 does not exist"
+}
+
+$ curl -i -X POST $API/orders -H "Content-Type: application/json" \
+       -d '{"customerId":"CUST-42","product":"MacBook Air","quantity":1}'
+HTTP/2 201
+content-type: application/json
+
+{"id":"ORD-4","customerId":"CUST-42","product":"MacBook Air","quantity":1}
+
+$ curl -i -X POST $API/orders -H "Content-Type: application/json" -d '{malformed'
+HTTP/2 400
+content-type: application/json
+x-amzn-errortype: BadRequestException
+
+{"message": "Could not process payload"}
+```
+
+Screenshots of the full `curl -i` run (cases 1–9):
+
+![curl results 1](docs/curl-results-1.png)
+![curl results 2](docs/curl-results-2.png)
+![curl results 3](docs/curl-results-3.png)
+
+### Observations
+
+- **Cases 1–8 behave as the contract requires.** Correct status codes, error bodies in the `{error, message}` format, no stack traces. The three problems found in Part III are solved.
+- **Case 6 returned `ORD-4`.** The create function now uses the JAR with the three sample orders, so the generated id is `size + 1 = 4`. This confirms that each Lambda function has its own in-memory list: the order created here is **not** visible to `GET /orders/ORD-4`, which runs in a different function.
+- **Case 9: the error comes from API Gateway itself.** `$input.json('$')` could not parse the body, so API Gateway rejected it (`x-amzn-errortype: BadRequestException`) and **never invoked Lambda**: there is no `x-amzn-trace-id` header in this response. The status is right (400), but the body does not follow our error format, because our integration-response templates only apply to responses that come from Lambda.
+- **Case 10: a client error reported as 500.** The JSON is valid, so API Gateway forwards it. The **Lambda Java runtime** then fails to deserialize `"two"` into `int quantity` *before our code runs*. Its error message has no `INVALID_` prefix, so it falls into the 500 catch-all. The response is safe, since nothing internal is exposed, but semantically wrong.
+- **Cases 11–12: unknown routes and methods give `403 Missing Authentication Token`.** This is API Gateway's default for any route or method that does not exist. The correct answers would be `404 Not Found` and `405 Method Not Allowed`.
+- **The `Location` header for `201` is not configured yet.** It could be added in the `201` integration response with `#set($context.responseOverride.header.Location = "/orders/$input.path('$.id')")`.
+
+Cases 9–12 could be fixed in API Gateway without touching Java. **Gateway Responses** customize the errors API Gateway generates itself (e.g. `DEFAULT_4XX`, `MISSING_AUTHENTICATION_TOKEN` → 404 with our format). A **request model + request validator** (a JSON Schema requiring `customerId`, `product` and an integer `quantity > 0`) would reject case 10 with a 400 before Lambda runs.
+
+---
+
+## 10. Checkpoint 3 — Who is responsible for what?
+
+### What API Gateway is currently responsible for
+
+| Responsibility | How it is done here |
+|----------------|---------------------|
+| **Routing** | The resource tree (`/orders`, `/orders/{id}`) plus the HTTP method decides which of the three Lambda functions is invoked. |
+| **Rejecting unknown routes and methods** | Anything not configured is answered by API Gateway (`403 Missing Authentication Token`) without invoking Lambda. |
+| **Extracting path parameters** | `{id}` in `/orders/{id}` → `$input.params('id')`. |
+| **Extracting query parameters** | `customerId` → `$input.params('customerId')`. |
+| **Parsing the request body** | `$input.json('$')` parses the body. Malformed JSON is rejected with 400 before Lambda. |
+| **Transforming requests** | VTL mapping templates build the Lambda event: a bare string for the GETs, the body for POST. Values are escaped with `$util.escapeJavaScript`. |
+| **Invoking Lambda** | API Gateway calls Lambda with its own permission. The client never talks to Lambda. |
+| **Choosing status codes** | Default response → 200 or 201. Lambda errors → 400, 404 or 500 depending on the regex. |
+| **Mapping errors** | Regexes on `errorMessage` classify the error. Each class has its own method response. |
+| **Transforming responses** | Templates turn the Lambda error document (`errorMessage`, `errorType`, `stackTrace`) into `{error, message}`, and **hide** internal details. |
+| **Response headers** | `Content-Type: application/json` (and, potentially, `Location`). |
+| **Deployment / versioning of the HTTP interface** | Stages (`dev`) serve a deployed snapshot of all the above. |
+
+**What it is *not* responsible for:**
+- **Business rules:** validation, id generation, searching, all in `OrderService`/`OrderRequest`.
+- **JSON ↔ Java conversion:** done by the Lambda Java runtime.
+- **Storage:** in-memory, inside each Lambda environment.
+
+Our Java code still has **zero knowledge of HTTP**: it receives a `String` or an `OrderRequest` and returns an `Order`, a `List<Order>`, or throws `Exceptions`.
+
+### Advantages of this distribution
+
+1. **The application stays plain Java.** `OrderService` is the same class used by the JUnit tests in Part I. It has no AWS or HTTP dependency, the JAR is thin, and the business logic is tested in milliseconds without the cloud.
+2. **Clear separation of concerns.** The HTTP contract (URLs, status codes, error format) lives in the HTTP layer; the business rules live in Java. Each can change independently. For example, renaming `/orders` to `/v1/orders` needs no new JAR.
+3. **Bad requests are rejected early and cheaply.** Unknown routes and malformed JSON are answered by API Gateway without invoking (and paying for) a Lambda.
+4. **Centralized protection of internal details.** Whatever the Java code throws, the templates guarantee clients only ever see `{error, message}`. Stack traces and class names cannot leak through a forgotten `catch`.
+5. **Minimal inputs per function.** Each Lambda receives exactly what it needs (`"ORD-42"`), not a large HTTP event, so the functions are simpler and their inputs are easy to reproduce in the Lambda console.
+6. **Declarative.** Routing and mapping are configuration, not code. API Gateway can also export it as OpenAPI.
+
+### Disadvantages of this distribution
+
+1. **The behavior is split across two places, and one of them is not in the repository.** Status codes and error formats are defined in console configuration. They are not in git, not code-reviewed, and not covered by `mvn test`. To understand what `GET /orders/ORD-999` returns, you must read Java *and* click through the console.
+2. **The HTTP layer cannot be tested locally.** Both configuration mistakes we made (the orphan `200` response and the missing deploy) were only found by deploying and calling the real API.
+3. **Hidden coupling through strings.** The HTTP status depends on the *text* of `errorMessage` matching a regex. If someone renames `INVALID_QUANTITY` or changes the message format, the compiler and the domain tests stay green, but the API silently returns 500 instead of 400. Only the `shouldPrefixErrorMessageWithErrorCode` test protects this contract, and only partially.
+4. **VTL is an extra, niche language.** The mapping templates contain logic (`indexOf`, `substring`, escaping) written in a language with poor tooling and no tests. A bug there only shows up at runtime.
+5. **Duplication.** The same error templates and regexes are repeated on every method. Adding an endpoint means repeating the whole configuration.
+6. **Errors from three different layers.** Clients can receive errors from:
+   - our Java code (`{error, message}`, correct);
+   - API Gateway itself (`{"message": "Could not process payload"}`, `403 Missing Authentication Token`);
+   - the Lambda runtime (deserialization failure → 500).
+
+   Each one needs its own fix (integration responses, Gateway Responses, request models) to make the API consistent.
+7. **Vendor lock-in.** Mapping templates and integration responses exist only in API Gateway **REST APIs**. HTTP APIs don't support them, and no other platform understands them. Moving the API means rewriting the HTTP layer from scratch.
+8. **One function per operation.** Three Lambda functions deploy the same JAR, each with its own cold starts and its own in-memory state. Case 6 shows the state problem: an order created through `POST` cannot be read through `GET`.
+
+### Conclusion
+
+This design puts **all HTTP knowledge in API Gateway** and **all business knowledge in Java**. That keeps the Java code clean, portable and easy to test. The price is a significant amount of untested, unversioned, platform-specific logic in API Gateway configuration, coupled to the Java code through the text of error messages. It works well for a small API with few endpoints. As the API grows, the cost of maintaining mapping templates per method grows with it. Lambda **proxy integration** makes the opposite trade-off: it moves those responsibilities into the code.
