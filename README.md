@@ -261,7 +261,13 @@ Tests cover:
 - searching orders by customer;
 - invalid input (null/blank ids, invalid create requests).
 
-Result: `Tests run: 14, Failures: 0, Errors: 0, Skipped: 0`.
+- requests built the way Lambda builds them (no-arg constructor + setters), with missing fields.
+
+Result: `Tests run: 15, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+
+![mvn test output](docs/tests-passing.png)
+
+*(Screenshot taken before the Lambda-path test was added, when the suite had 14 tests.)*
 
 ---
 
@@ -281,3 +287,234 @@ The compiled `.class` files of our own code (`Order`, `OrderRequest`, `OrderServ
 
 **Which parts of your application currently know about HTTP?**
 None. No class references HTTP requests, responses, status codes, headers or API Gateway events. HTTP concepts exist only in this README's API contract. The mapping from domain results/exceptions to HTTP will be added later in a separate handler layer.
+
+---
+
+## 5. Part II — Java Function on AWS Lambda
+
+### What was deployed
+
+The `createOrder` operation was deployed **without redesigning the application** and **without adding any AWS dependency**. Lambda invokes the existing service method directly.
+
+| Setting            | Value |
+|--------------------|-------|
+| Function name      | `serverless-rest-api-create-order` |
+| Region             | `us-east-1` |
+| Runtime            | Java 17 |
+| Code               | `target/serverless-rest-api-with-aws-lambda-and-api-gateway-1.0-SNAPSHOT.jar` (built with `mvn clean package`) |
+| Handler            | `co.edu.escuelaing.OrderService::createOrder` |
+| Memory             | 512 MB |
+| Triggers           | None yet (invoked manually; API Gateway is added in the next part) |
+
+![Lambda function overview](docs/lambda-function-overview.png)
+
+`createOrder` was chosen because it is the only operation that works on its own: `getOrder` and `getOrdersByCustomer` need orders that already exist, and a new Lambda execution environment starts with an empty list.
+
+The only changes needed for Lambda were in `OrderRequest`:
+- a **public no-arg constructor** and **setters**, because that is how the runtime builds the input object;
+- the validation was moved out of the constructor/setters into `OrderRequest.validate()`, which `OrderService.createOrder` calls. If validation stayed in the setters, an exception thrown there would happen *during JSON parsing* and be reported as a deserialization error instead of our domain error. If it stayed only in the constructor, Lambda would skip it entirely.
+
+### Manual invocations
+
+The function was invoked five times from the Lambda console **Test** tab. Invocations 1–4 ran in a row in the same execution environment. Invocation 5 ran after the function was modified, so it got a new environment.
+
+#### 1. Valid order (cold start)
+
+Input:
+
+```json
+{ "customerId": "CUST-42", "product": "MacBook Air", "quantity": 1 }
+```
+
+Output — `Executing function: succeeded`:
+
+```json
+{ "id": "ORD-1", "customerId": "CUST-42", "product": "MacBook Air", "quantity": 1 }
+```
+
+Duration 69.56 ms, **Init Duration 390.34 ms**, billed 460 ms.
+
+![Input 1](docs/lambda-1-input-valid.png)
+![Output 1](docs/lambda-1-output-valid.png)
+
+#### 2. Invalid quantity
+
+Input:
+
+```json
+{ "customerId": "CUST-42", "product": "MacBook Air", "quantity": 0 }
+```
+
+Output — `Executing function: failed`:
+
+```json
+{
+  "errorMessage": "Quantity must be > 0",
+  "errorType": "co.edu.escuelaing.Exceptions",
+  "stackTrace": [
+    "co.edu.escuelaing.OrderRequest.validateQuantity(OrderRequest.java:61)",
+    "co.edu.escuelaing.OrderRequest.validate(OrderRequest.java:48)",
+    "co.edu.escuelaing.OrderService.createOrder(OrderService.java:21)",
+    "java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)",
+    "..."
+  ]
+}
+```
+
+Duration 191.51 ms, no Init Duration.
+
+![Input 2](docs/lambda-2-input-invalid-quantity.png)
+![Output 2](docs/lambda-2-output-invalid-quantity.png)
+
+#### 3. Second valid order (warm invocation)
+
+Input:
+
+```json
+{ "customerId": "CUST-42", "product": "MacBook Pro", "quantity": 2 }
+```
+
+Output — `Executing function: succeeded`:
+
+```json
+{ "id": "ORD-2", "customerId": "CUST-42", "product": "MacBook Pro", "quantity": 2 }
+```
+
+Duration **2.76 ms**, billed 3 ms, no Init Duration.
+
+![Input 3](docs/lambda-3-input-second-order.png)
+![Output 3](docs/lambda-3-output-second-order.png)
+
+#### 4. Null customer id
+
+Input:
+
+```json
+{ "customerId": null, "product": "MacBook Pro", "quantity": 2 }
+```
+
+Output — `Executing function: failed`:
+
+```json
+{
+  "errorMessage": "Customer id cannot be null or blank",
+  "errorType": "co.edu.escuelaing.Exceptions",
+  "stackTrace": [
+    "co.edu.escuelaing.OrderRequest.validateCustomerId(OrderRequest.java:53)",
+    "co.edu.escuelaing.OrderRequest.validate(OrderRequest.java:46)",
+    "co.edu.escuelaing.OrderService.createOrder(OrderService.java:21)",
+    "java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)",
+    "..."
+  ]
+}
+```
+
+Duration 23.79 ms, no Init Duration (still the same warm environment).
+
+![Input 4](docs/lambda-4-input-null-customer.png)
+![Output 4](docs/lambda-4-output-null-customer.png)
+
+#### 5. Valid order in a new execution environment
+
+Input (a different customer):
+
+```json
+{ "customerId": "CUST-45", "product": "MacBook Pro", "quantity": 2 }
+```
+
+Output — `Executing function: succeeded`:
+
+```json
+{ "id": "ORD-1", "customerId": "CUST-45", "product": "MacBook Pro", "quantity": 2 }
+```
+
+Duration 59.62 ms, **Init Duration 360.13 ms**, billed 420 ms. The function had been modified just before this invocation, so Lambda discarded the old environment and started a new one. The new `OrderService` instance has an empty list, so the id is back at **`ORD-1`**, even though two orders had been created before.
+
+![Input 5](docs/lambda-5-input-new-environment.png)
+![Output 5](docs/lambda-5-output-new-environment.png)
+
+### Investigation: how does the Lambda Java runtime convert JSON ↔ Java?
+
+*Investigated with an LLM, then checked against the deployed function.*
+
+**1. Locating the code.** The handler string `co.edu.escuelaing.OrderService::createOrder` tells the runtime which class to load from the JAR and which method to call. During the **init phase** the runtime loads the class and creates **one instance** with its public no-arg constructor. It then finds the method by name using **Java reflection**. The handler method may take one input parameter, plus an optional `com.amazonaws.services.lambda.runtime.Context`.
+
+**2. JSON → Java (input).** The runtime looks at the **declared type of the method's parameter** (`OrderRequest`) and deserializes the event JSON into it with its built-in serializer (a JSON library bundled in the runtime, based on Jackson). For a POJO it follows JavaBean conventions:
+- it creates the object with the **no-arg constructor**;
+- for each JSON property it calls the matching **setter** (`"customerId"` → `setCustomerId(...)`, `"quantity"` → `setQuantity(int)`), converting JSON types to Java types (a JSON number becomes an `int`, a JSON string becomes a `String`);
+- a property that is **missing** from the JSON is never set, so the field keeps its default value (`null` for objects, `0` for `int`).
+
+Besides POJOs, the runtime can also map JSON to `String`, primitives and wrappers, `Map` and `List`. A handler can skip this conversion entirely by implementing `RequestStreamHandler` and reading the raw `InputStream`.
+
+**3. Calling the function.** The runtime invokes `createOrder(request)` on the **same instance** for every invocation handled by that execution environment.
+
+**4. Java → JSON (output).** The returned object (`Order`) is serialized with the same serializer by reading its **getters**: `getId()` → `"id"`, `getCustomerId()` → `"customerId"`, and so on. The JSON property names come from the **getter names, not the field names**. That is why the getter had to be renamed from `getOrderId()` to `getId()` to get `"id"` in the response.
+
+**5. Exceptions.** If the method throws, the runtime catches the exception and returns an error document instead of the result: `errorMessage` = `getMessage()`, `errorType` = the exception's fully qualified class name, `stackTrace` = the stack frames. The invocation is marked as failed. This is a Lambda error, **not** an HTTP response: there is no status code yet.
+
+#### Verification against the deployed Lambda
+
+| Claim | Evidence from the invocations |
+|-------|-------------------------------|
+| JSON input is mapped to `OrderRequest` through setters | Invocations 1 and 3: the values from the JSON (`CUST-42`, `MacBook Pro`, `2`) appear in the created order. |
+| JSON number → `int` | `"quantity": 2` arrived as the int `2`. In invocation 2, `0` reached `validateQuantity` as an int and was rejected. |
+| The return value is serialized from getters | The response contains `"id"`, the name taken from `getId()`, even though the class is `Order` and nothing in it is annotated. |
+| The handler is invoked by reflection | The stack trace of invocation 2 shows `NativeMethodAccessorImpl.invoke` right below `OrderService.createOrder`. |
+| Exceptions become `errorMessage` / `errorType` / `stackTrace` | Invocation 2: `"errorMessage": "Quantity must be > 0"`, `"errorType": "co.edu.escuelaing.Exceptions"`. |
+| Validation happens in our code, not during parsing | In invocations 2 and 4 the stack trace starts in `OrderRequest.validate` ← `OrderService.createOrder`, not in the JSON deserializer. |
+| A JSON `null` reaches the object as a Java `null` | Invocation 4: `"customerId": null` was deserialized without error, and our `validateCustomerId` rejected it with `"Customer id cannot be null or blank"`. A property that is completely omitted ends in the same state (`null`). That case is covered by the unit test `shouldRejectRequestBuiltWithSettersMissingCustomer`. |
+| One instance is created at init and reused | Only invocation 1 reports an **Init Duration** (390.34 ms) among invocations 1–4. Invocation 3 returned **`ORD-2`**, so the `orders` list from invocation 1 was still in memory. The failed invocation 2 did not add an order, so it did not consume an id. |
+| In-memory state is not persistent | Invocation 5, after the function was modified, shows a new **Init Duration** (360.13 ms) and returned **`ORD-1`** again. The orders created before were lost with the old environment. The same happens after an idle timeout, or when concurrent requests are served by a different environment. |
+
+**Conclusion.** The Lambda Java runtime acts as an adapter between JSON and plain Java. It reads the handler string, creates the class once, and uses reflection to call the method. Before the call it deserializes the event JSON into the parameter type using the no-arg constructor and setters. After the call it serializes the return value into JSON using its getters. If the method throws, it turns the exception into an error JSON. Our code never sees JSON, so the same `OrderService` is used unchanged by JUnit and by Lambda. The cost is that the input classes must follow JavaBean conventions, and the instance, with its in-memory data, lives only as long as the execution environment.
+
+---
+
+## 6. Checkpoint 2 — Architecture diagram
+
+```mermaid
+flowchart TD
+    Client["Lambda console Test event<br/>(JSON)"]
+    subgraph Lambda["AWS Lambda — execution environment (Java 17)"]
+        direction TB
+        Runtime["Lambda Java runtime<br/>handler: co.edu.escuelaing.OrderService::createOrder"]
+        Deser["Deserialize JSON → OrderRequest<br/>(no-arg constructor + setters)"]
+        subgraph JAR["Our JAR (no AWS dependencies)"]
+            direction TB
+            Service["OrderService.createOrder(OrderRequest)<br/>— request.validate()<br/>— generate id ORD-n<br/>— add to in-memory List&lt;Order&gt;"]
+            Order["Order<br/>(id, customerId, product, quantity)"]
+            Ex["Exceptions<br/>(INVALID_QUANTITY, INVALID_CUSTOMER, ...)"]
+        end
+        Ser["Serialize Order → JSON<br/>(getters: getId → &quot;id&quot;, ...)"]
+        Err["Build error JSON<br/>errorMessage / errorType / stackTrace"]
+    end
+    Result["Response JSON<br/>{ id, customerId, product, quantity }"]
+    ErrResult["Failed invocation<br/>{ errorMessage, errorType, stackTrace }"]
+
+    Client --> Runtime --> Deser -->|"Java object"| Service
+    Service -->|"returns"| Order -->|"Java object"| Ser --> Result
+    Service -.->|"throws"| Ex -.-> Err -.-> ErrResult
+```
+
+The conceptual flow required by the checkpoint, mapped to the real classes:
+
+```
+JSON  {"customerId":"CUST-42","product":"MacBook Air","quantity":1}
+  |
+  v
+AWS Lambda Runtime        (handler co.edu.escuelaing.OrderService::createOrder)
+  |
+  v
+Java Object               OrderRequest  (new OrderRequest() + setters)
+  |
+  v
+Java Function             OrderService.createOrder(OrderRequest)
+  |
+  v
+Java Object               Order  (or a thrown Exceptions)
+  |
+  v
+JSON  {"id":"ORD-1","customerId":"CUST-42","product":"MacBook Air","quantity":1}
+```
+
+At this stage there is still **no HTTP** anywhere: the function is invoked with a raw JSON event, and errors are Lambda errors, not status codes. Exposing it over HTTP is the job of API Gateway in the next part.
