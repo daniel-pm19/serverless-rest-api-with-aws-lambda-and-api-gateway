@@ -1174,3 +1174,129 @@ So B's business logic is marginally cleaner. The price is that the *project* now
 - Fewer functions and deployments: one artifact per bounded context instead of one per operation.
 
 That choice still keeps some of A's strengths, by assigning API Gateway what it does best at the edge: routing to the right function, authentication, throttling, and optionally request validation. What should not live there is business-dependent behavior written in VTL. A remains a reasonable option for very small, stable APIs, or when API Gateway integrates directly with other AWS services without any Lambda. In those cases mapping templates are the only place the transformation can live.
+
+---
+
+## 15. AI-Assisted Development
+
+This project was developed with **Claude Code** (Claude Opus) running as a coding agent in VS Code, with access to the repository, the terminal and the deployed API URLs, but **not** to the AWS console or credentials.
+
+### How the assistant was used
+
+| Phase | Developer | Assistant |
+|---|---|---|
+| API contract and README questions | Reviewed and accepted the design | Drafted the contract, error format and answers |
+| Part I — business logic | **Wrote** `Order`, `OrderRequest`, `OrderService`, `Exceptions` | Reviewed them over several rounds and pointed out bugs; the developer fixed them (see below) |
+| Unit tests | Requested them | Wrote `OrderServiceTest` and the Maven/JUnit setup |
+| Lambda + API Gateway (Parts II–IV) | **Configured everything in the AWS console**, took the screenshots, ran the tests | Gave step-by-step instructions, diagnosed errors from logs and `curl` output, verified the public endpoints with `curl`, documented the results |
+| Part V — proxy adapter | Configured the second API and Lambda | Designed and implemented `OrdersHandler` and its tests, and found and fixed its `Location` bug |
+| Security hygiene | **Cropped screenshots** containing the AWS account id | Flagged account ids, emails and session tokens in screenshots and logs, and redacted the saved event |
+
+Bugs the assistant found in the hand-written Part I code, which the developer then fixed:
+- `String` comparison with `==`;
+- `getOrder` throwing on the first non-matching order;
+- `getOrdersByCustomer` returning `null` and adding to the list it was iterating (`ConcurrentModificationException`);
+- `"ORD-" + size + 1` concatenating strings (`ORD-01`, `ORD-11`…);
+- `id.isBlank() || id == null` throwing `NullPointerException`;
+- `createOrder` never storing the order;
+- `quantity < 0` accepting 0.
+
+### Prompt used for the proxy-integration part (improved)
+
+```
+I have a Java 17 Orders API. The business logic (OrderService, Order, OrderRequest,
+Exceptions with an enum of error types) is plain Java with no AWS dependencies and
+17 JUnit tests. It is currently exposed through API Gateway REST with non-proxy
+integrations: 3 Lambda functions whose handlers point directly at OrderService
+methods, VTL mapping templates, and Lambda-error-regex integration responses.
+
+I want a second, independent API using Lambda proxy integration for:
+  POST /orders, GET /orders/{id}, GET /orders?customerId=...
+
+Constraints:
+- OrderService/Order/OrderRequest must not import AWS or JSON-library classes.
+- Errors must follow {"error": CODE, "message": text}; 404 for ORDER_NOT_FOUND,
+  400 for invalid input including malformed JSON, 500 without internal details.
+- POST returns 201 and decide whether/how to send Location.
+- The existing non-proxy API must keep working (it relies on the "CODE: message"
+  exception message format).
+- The HTTP layer must be unit-testable without AWS.
+
+Before generating code:
+1. propose the architecture (how many Lambdas, where routing lives);
+2. list existing files that must change and why;
+3. list new classes and dependencies (and the impact on the JAR);
+4. state exactly where each HTTP responsibility will live;
+5. list the trade-offs of your proposal and one alternative.
+Do not implement until I approve.
+```
+
+The improvements over the workshop's example prompt:
+- it states the **current** architecture and the constraints coming from it (Architecture A must keep working);
+- it defines the error contract up front;
+- it asks for dependencies and their impact, plus trade-offs and an alternative, so the agent's choices can be evaluated instead of just accepted.
+
+---
+
+## 16. Criticizing the agent
+
+Four non-trivial decisions proposed by the assistant during this workshop.
+
+### Decision 1 — One Lambda per operation in Architecture A
+
+**Decision made by the agent:** create a separate function for each operation (`serverless-rest-api-get-order`, `-find-orders`, `-create-order`), each with a handler pointing directly at an `OrderService` method.
+
+**Why do you think it proposed this?** It is the shortest path that satisfies "do not redesign the application". A Lambda handler can be any public method, so each function needs zero adapter code, and each mapping template only has to produce the one argument that method takes.
+
+**Do you agree with it?** Partially. It kept the Java untouched and made Part II–IV simple. But it had a real cost, visible in the tests: three deployments of the same JAR, three sets of cold starts, and **no shared state**. An order created with `POST` could never be read with `GET` (`ORD-4` in section 9). The agent mentioned the state problem only when it appeared, not when it proposed the design.
+
+**What alternative could have been used?** A single function with a small dispatcher, where the mapping template adds an `"operation"` field, e.g. `{"operation": "getOrder", "id": "$input.params('id')"}`. That keeps one deployment and shared state, at the cost of an extra Java class that routes by operation.
+
+**What did you finally implement and why?** Three functions in Architecture A, which kept the Java code free of any adapter, as the workshop asked at that stage, and a **single** function in Architecture B, where an adapter was required anyway.
+
+### Decision 2 — Encoding the error code in the exception message (`CODE: message`)
+
+**Decision made by the agent:** change `Exceptions` so that `getMessage()` returns `ORDER_NOT_FOUND: Order ORD-999 does not exist`, so that API Gateway regexes (`ORDER_NOT_FOUND:.*`, `INVALID_.*`) can choose the status code, and a VTL template can split it into `{error, message}`.
+
+**Why do you think it proposed this?** With non-proxy integration, API Gateway only sees `errorMessage`, not the exception's enum field. Free-text messages ("Order with id X was not Found") would have needed fragile regexes per message.
+
+**Do you agree with it?** It works and was pragmatic, but it is a **leaky design**. A domain class now formats its messages for a transport layer it should not know about. The coupling is invisible to the compiler: renaming an enum value silently turns a 400 into a 500. Only one unit test (`shouldPrefixErrorMessageWithErrorCode`) protects it. Later, the proxy adapter needed `getDetail()` precisely to get the message *without* the prefix, which shows the prefix was not a domain concern.
+
+**What alternative could have been used?** Keep the domain message clean and add a thin Lambda wrapper in Architecture A that catches `Exceptions` and rethrows an exception whose message is the code. Or use **separate exception classes** (`OrderNotFoundException`, `InvalidOrderException`) and match on `errorType` in a single response template with `#if`.
+
+**What did you finally implement and why?** The prefix, plus `getDetail()` for Architecture B. It was the smallest change that made Architecture A meet the contract, and its cost is documented in Checkpoint 3.
+
+### Decision 3 — Where validation lives
+
+**Decision made by the agent:** move validation out of the `OrderRequest` constructor and setters into an explicit `OrderRequest.validate()` method, called by `OrderService.createOrder`.
+
+**Why do you think it proposed this?** The Lambda runtime, and later Jackson, builds `OrderRequest` with the no-arg constructor plus setters. That skips constructor validation. Validation inside setters fails during deserialization, and also does not run for fields that are missing.
+
+**Do you agree with it?** Yes. It puts validation in the business layer, where it runs no matter how the object was built, and the invocation-2 and invocation-4 stack traces confirmed it runs in our code. One weakness remains: `OrderRequest` is now a mutable object that can exist in an invalid state until someone calls `validate()`.
+
+**What alternative could have been used?** An immutable `record OrderRequest(String customerId, String product, int quantity)` with validation in a factory method, plus Jackson `@JsonCreator` in the adapter. Or Bean Validation (`@NotBlank`, `@Positive`). Both are cleaner, but they require annotations or a library on the domain class, or a separate DTO in the adapter.
+
+**What did you finally implement and why?** `validate()` called from the service. It is plain Java, works with every way the object is created (tests, Lambda runtime, Jackson), and was a small change.
+
+### Decision 4 — The proxy adapter: hand-written routing, AWS event classes and Jackson
+
+**Decision made by the agent:** one `OrdersHandler` implementing `RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>`, routing manually by method and path segments, parsing bodies with Jackson, and building a fat JAR with the shade plugin.
+
+**Why do you think it proposed this?** These are the standard, documented AWS types for proxy integration. Typed events make the handler easy to unit-test, and Jackson gives precise errors for malformed JSON or wrong types (the two cases Architecture A got wrong).
+
+**Do you agree with it?** Mostly. Isolating all AWS/HTTP code in one `http` package is exactly the separation the workshop asks for, and 14 local tests prove it. But:
+- **The JAR grew from 12 KB to 3.4 MB.** That affects deployment and cold start for all functions, including the Architecture A ones that never use those classes.
+- **The hand-written router does not scale.** Fine for 3–4 routes, not for 30.
+- **The agent introduced a bug.** The first version built `Location` as `/orders/{id}`, without the stage. It was only caught by reasoning about the real response; the unit tests passed because they did not model the stage.
+
+**What alternative could have been used?** A `Map<String, Object>` input with the runtime's built-in serializer, which needs no events library but loses type safety. Or a framework adapter such as `aws-serverless-java-container` or Spring Cloud Function, which brings proper routing at a much larger dependency and cold-start cost. Or a separate Maven module for the adapter, so the business JAR stays thin.
+
+**What did you finally implement and why?** The agent's design, with the `Location` fix based on `requestContext.path`, which was verified on the deployed API (`/dev/orders/ORD-4`). For three routes, the explicit code is easier to read and test than a framework.
+
+### Mistakes in the agent's operational guidance
+
+Besides design decisions, two of the agent's **instructions** caused deployment problems:
+- **"Create 201 and delete the 200 method response"** did not say that the default integration response still pointed to 200. Every POST then failed with `Output mapping refers to an invalid method response: 200`.
+- **The agent did not stress that new methods must be redeployed to the stage.** The first `curl` run returned `403 Missing Authentication Token` for every `/orders` call.
+
+Both were diagnosed quickly from the logs, but they show that the agent's console instructions needed verification just like its code.
