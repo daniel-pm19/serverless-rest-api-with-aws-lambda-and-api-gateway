@@ -9,6 +9,8 @@ public class OrderService {
 
     private List<Order> orders;
 
+    private int nextId;
+
     public OrderService() {
         this(List.of(
                 new Order("ORD-42", "CUST-42", "MacBook Air", 1),
@@ -19,6 +21,7 @@ public class OrderService {
 
     public OrderService(List<Order> initialOrders) {
         this.orders = new ArrayList<>(initialOrders);
+        this.nextId = this.orders.size() + 1;
     }
 
     public Order createOrder(OrderRequest request) throws Exceptions {
@@ -43,13 +46,7 @@ public class OrderService {
             throw new Exceptions(InnerExceptions.INVALID_ORDER, "Order id cannot be null or blank");
         }
 
-        Order order = null;
-
-        for (Order o : orders) {
-            if (o.getId().equals(id)) {
-                order = o;
-            }
-        }
+        Order order = findOrder(id);
 
         if (order == null) {
             throw new Exceptions(InnerExceptions.ORDER_NOT_FOUND, "Order " + id + " does not exist");
@@ -75,7 +72,35 @@ public class OrderService {
         return customerOrders;
     }
 
+    public void deleteOrder(String id) throws Exceptions {
+        if (id == null || id.isBlank()) {
+            throw new Exceptions(InnerExceptions.INVALID_ORDER, "Order id cannot be null or blank");
+        }
+
+        Order order = findOrder(id);
+
+        if (order == null) {
+            throw new Exceptions(InnerExceptions.ORDER_NOT_FOUND, "Order " + id + " does not exist");
+        }
+
+        orders.remove(order);
+    }
+
+    private Order findOrder(String id) {
+        for (Order o : orders) {
+            if (o.getId().equals(id)) {
+                return o;
+            }
+        }
+        return null;
+    }
+
+    // Ids are never reused: the counter only grows and skips ids already taken (e.g. the sample ORD-42)
     private String generateOrderId() {
-        return "ORD-" + (orders.size() + 1);
+        String id;
+        do {
+            id = "ORD-" + nextId++;
+        } while (findOrder(id) != null);
+        return id;
     }
 }

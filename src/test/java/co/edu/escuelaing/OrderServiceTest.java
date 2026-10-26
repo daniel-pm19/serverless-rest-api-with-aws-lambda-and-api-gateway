@@ -85,6 +85,65 @@ class OrderServiceTest {
         assertEquals("ORDER_NOT_FOUND: Order ORD-999 does not exist", ex.getMessage());
     }
 
+    // deleteOrder
+
+    @Test
+    void shouldDeleteExistingOrder() throws Exception {
+        Order created = service.createOrder(new OrderRequest("CUST-42", "MacBook Air", 1));
+
+        service.deleteOrder(created.getId());
+
+        Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder(created.getId()));
+        assertEquals(InnerExceptions.ORDER_NOT_FOUND, ex.getExceptions());
+    }
+
+    @Test
+    void shouldFailWhenDeletingNonexistentOrder() {
+        Exceptions ex = assertThrows(Exceptions.class, () -> service.deleteOrder("ORD-999"));
+
+        assertEquals(InnerExceptions.ORDER_NOT_FOUND, ex.getExceptions());
+    }
+
+    @Test
+    void shouldRejectBlankIdWhenDeleting() {
+        Exceptions ex = assertThrows(Exceptions.class, () -> service.deleteOrder(" "));
+
+        assertEquals(InnerExceptions.INVALID_ORDER, ex.getExceptions());
+    }
+
+    @Test
+    void shouldOnlyDeleteTheRequestedOrder() throws Exception {
+        Order first = service.createOrder(new OrderRequest("CUST-42", "MacBook Air", 1));
+        Order second = service.createOrder(new OrderRequest("CUST-42", "Magic Mouse", 2));
+
+        service.deleteOrder(first.getId());
+
+        List<Order> remaining = service.getOrdersByCustomer("CUST-42");
+        assertEquals(1, remaining.size());
+        assertSame(second, remaining.get(0));
+    }
+
+    @Test
+    void shouldNotReuseIdsAfterDelete() throws Exception {
+        Order first = service.createOrder(new OrderRequest("CUST-42", "MacBook Air", 1));
+        Order second = service.createOrder(new OrderRequest("CUST-42", "Magic Mouse", 2));
+
+        service.deleteOrder(first.getId());
+        Order third = service.createOrder(new OrderRequest("CUST-7", "iPad", 1));
+
+        assertEquals("ORD-3", third.getId());
+        assertNotEquals(second.getId(), third.getId());
+    }
+
+    @Test
+    void shouldSkipIdsAlreadyTakenBySampleOrders() throws Exception {
+        OrderService withExisting = new OrderService(List.of(new Order("ORD-2", "CUST-1", "Pen", 1)));
+
+        Order created = withExisting.createOrder(new OrderRequest("CUST-42", "MacBook Air", 1));
+
+        assertEquals("ORD-3", created.getId());
+    }
+
     @Test
     void shouldRejectNullOrderId() {
         Exceptions ex = assertThrows(Exceptions.class, () -> service.getOrder(null));

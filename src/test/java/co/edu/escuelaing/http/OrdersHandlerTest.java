@@ -1,6 +1,7 @@
 package co.edu.escuelaing.http;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Map;
@@ -10,6 +11,9 @@ import org.junit.jupiter.api.Test;
 
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
 import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
+
+import co.edu.escuelaing.Order;
+import co.edu.escuelaing.OrderService;
 
 class OrdersHandlerTest {
 
@@ -151,11 +155,71 @@ class OrdersHandlerTest {
         assertTrue(response.getBody().contains("\"error\":\"INVALID_ORDER\""));
     }
 
+    // DELETE /orders/{id}
+
+    @Test
+    void shouldReturn204WithoutBodyWhenOrderIsDeleted() {
+        APIGatewayProxyResponseEvent response = call("DELETE", "/orders/ORD-42", Map.of("id", "ORD-42"), null, null);
+
+        assertEquals(204, response.getStatusCode());
+        assertNull(response.getBody());
+    }
+
+    @Test
+    void shouldReturn404WhenDeletingNonexistentOrder() {
+        APIGatewayProxyResponseEvent response = call("DELETE", "/orders/ORD-999", Map.of("id", "ORD-999"), null, null);
+
+        assertEquals(404, response.getStatusCode());
+        assertEquals("{\"error\":\"ORDER_NOT_FOUND\",\"message\":\"Order ORD-999 does not exist\"}",
+                response.getBody());
+    }
+
+    @Test
+    void deletedOrderCannotBeRetrieved() {
+        call("DELETE", "/orders/ORD-42", Map.of("id", "ORD-42"), null, null);
+
+        APIGatewayProxyResponseEvent response = call("GET", "/orders/ORD-42", Map.of("id", "ORD-42"), null, null);
+
+        assertEquals(404, response.getStatusCode());
+    }
+
+    @Test
+    void deletingTwiceReturns404TheSecondTime() {
+        call("DELETE", "/orders/ORD-42", Map.of("id", "ORD-42"), null, null);
+
+        APIGatewayProxyResponseEvent response = call("DELETE", "/orders/ORD-42", Map.of("id", "ORD-42"), null, null);
+
+        assertEquals(404, response.getStatusCode());
+    }
+
+    // unexpected internal error
+
+    @Test
+    void shouldReturn500WithoutInternalDetailsOnUnexpectedError() {
+        OrderService broken = new OrderService() {
+            @Override
+            public Order getOrder(String id) {
+                throw new IllegalStateException("database connection lost at OrderRepository.java:87");
+            }
+        };
+        OrdersHandler brokenHandler = new OrdersHandler(broken);
+        APIGatewayProxyRequestEvent event = new APIGatewayProxyRequestEvent()
+                .withHttpMethod("GET")
+                .withPath("/orders/ORD-42")
+                .withPathParameters(Map.of("id", "ORD-42"));
+
+        APIGatewayProxyResponseEvent response = brokenHandler.handleRequest(event, null);
+
+        assertEquals(500, response.getStatusCode());
+        assertEquals("{\"error\":\"INTERNAL_ERROR\",\"message\":\"Unexpected error while processing the request\"}",
+                response.getBody());
+    }
+
     // routing
 
     @Test
     void shouldReturn405ForUnsupportedMethod() {
-        APIGatewayProxyResponseEvent response = call("DELETE", "/orders/ORD-42", Map.of("id", "ORD-42"), null, null);
+        APIGatewayProxyResponseEvent response = call("PUT", "/orders/ORD-42", Map.of("id", "ORD-42"), null, null);
 
         assertEquals(405, response.getStatusCode());
         assertTrue(response.getBody().contains("\"error\":\"METHOD_NOT_ALLOWED\""));

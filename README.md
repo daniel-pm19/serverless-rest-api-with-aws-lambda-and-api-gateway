@@ -179,7 +179,7 @@ If the customer has no orders, the response is still `200 OK` with an **empty ar
 |-----------------------------|-------|-------|
 | `200 OK`                    | Yes   | `GET /orders/{id}`, `GET /orders?customerId=...` |
 | `201 Created`               | Yes   | `POST /orders` |
-| `204 No Content`            | Not yet | Reserved for a future `DELETE /orders/{id}` (success with no body) |
+| `204 No Content`            | Yes   | `DELETE /orders/{id}` (added in section 17, proxy API only) |
 | `400 Bad Request`           | Yes   | Invalid body, invalid fields, missing parameters |
 | `404 Not Found`             | Yes   | `GET /orders/{id}` when the order does not exist |
 | `500 Internal Server Error` | Yes   | Any unexpected failure |
@@ -274,7 +274,7 @@ Tests cover:
 - the sample orders loaded by the no-arg constructor (see Part III);
 - the `CODE: message` format of error messages that API Gateway relies on (see Part IV).
 
-Result: `Tests run: 17, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+Result at the end of Part I–IV: `Tests run: 17, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`. The final project has 42 tests (see section 18).
 
 ![mvn test output](docs/tests-passing.png)
 
@@ -1044,6 +1044,7 @@ Order / List<Order> / Exceptions
 | `POST /orders` | parses `body` with Jackson into `OrderRequest` | `createOrder(request)` → **201** + `Location` |
 | `GET /orders` | reads `queryStringParameters.customerId` (null-safe) | `getOrdersByCustomer(customerId)` → **200** |
 | `GET /orders/{id}` | reads `pathParameters.id` | `getOrder(id)` → **200** |
+| `DELETE /orders/{id}` (added in section 17) | reads `pathParameters.id` | `deleteOrder(id)` → **204**, no body |
 | other method on a known path | — | **405** `METHOD_NOT_ALLOWED` |
 | unknown path (reaching the Lambda) | — | **404** `NOT_FOUND` |
 
@@ -1060,7 +1061,7 @@ Changes needed outside the adapter:
 - `Exceptions.getDetail()` returns the message **without** the `CODE: ` prefix. The prefix is kept because Architecture A still depends on it.
 - `pom.xml` now includes `aws-lambda-java-core`, `aws-lambda-java-events` and `jackson-databind`, plus the **maven-shade-plugin**. Lambda needs those libraries inside the JAR, so it grew from ~12 KB to ~3.4 MB (a "fat" JAR, as anticipated in Checkpoint 1).
 
-Because the handler is a normal Java class, the whole HTTP layer is tested **locally**. `OrdersHandlerTest` builds `APIGatewayProxyRequestEvent` objects in memory and checks status codes, headers and bodies: 14 tests, no AWS needed. `mvn test` now runs **31 tests** (17 business + 14 HTTP).
+Because the handler is a normal Java class, the whole HTTP layer is tested **locally**. `OrdersHandlerTest` builds `APIGatewayProxyRequestEvent` objects in memory and checks status codes, headers and bodies, with no AWS needed. At the end of Part V there were 14 HTTP tests (31 in total); after section 17 there are 19 (42 in total).
 
 ---
 
@@ -1081,7 +1082,7 @@ All requests made with `curl -i` against `https://0lx1iz642k.execute-api.us-east
 | 9 | `POST /orders` `{malformed` | **400** | `{"error":"INVALID_REQUEST","message":"Request body is not valid JSON for an order"}` |
 | 10 | `POST /orders` `"quantity":"two"` | **400** | `{"error":"INVALID_REQUEST","message":"Request body is not valid JSON for an order"}` |
 | 11 | `POST /orders` (`CUST-9`, Keyboard) then `GET /orders/ORD-5` | **201** then **200** | `location: /orders/ORD-5`, then the same order |
-| 12 | `DELETE /orders/ORD-42` | **405** | `{"error":"METHOD_NOT_ALLOWED","message":"DELETE is not allowed on /orders/{id}"}` |
+| 12 | `DELETE /orders/ORD-42` | **405** | `{"error":"METHOD_NOT_ALLOWED","message":"DELETE is not allowed on /orders/{id}"}`. This was before DELETE existed; it now returns 204 (section 17) |
 | 13 | `PUT /orders` | **405** | `{"error":"METHOD_NOT_ALLOWED","message":"PUT is not allowed on /orders"}` |
 | 14 | `GET /customers` | **403** | `{"message":"Missing Authentication Token"}` (from API Gateway) |
 
@@ -1135,7 +1136,7 @@ The id is `ORD-4` again because uploading new code started a fresh execution env
 | API Gateway objects configured | 3 methods, 3 request templates, ~9 integration responses with regex + VTL, ~10 method responses | 2 `ANY` methods with a checkbox |
 | Java infrastructure code | 0 lines (handlers point at `OrderService` directly) | `OrdersHandler` (~150 lines) + 3 dependencies + shade plugin |
 | Where status codes live | regexes on `errorMessage` + method responses, in the console | one `switch` and `json(201, …)` calls, in Java |
-| HTTP behavior tested by `mvn test` | none | 14 tests |
+| HTTP behavior tested by `mvn test` | none | 14 tests (19 after section 17) |
 | Errors in the contract format | only those from Lambda; API Gateway's own errors and runtime deserialization errors do not match | all requests that reach Lambda |
 | JAR | ~12 KB, no dependencies | ~3.4 MB fat JAR |
 
@@ -1300,3 +1301,130 @@ Besides design decisions, two of the agent's **instructions** caused deployment 
 - **The agent did not stress that new methods must be redeployed to the stage.** The first `curl` run returned `403 Missing Authentication Token` for every `/orders` call.
 
 Both were diagnosed quickly from the logs, but they show that the agent's console instructions needed verification just like its code.
+
+---
+
+## 17. Final challenge — `DELETE /orders/{id}`
+
+### Prediction (committed before implementing)
+
+The prediction was written and committed **before** any implementation: [`docs/delete-order-prediction.md`](docs/delete-order-prediction.md), commit `893cfb2`. In summary:
+
+| Question | Prediction |
+|---|---|
+| Which Java classes should change? | `OrderService` (new `deleteOrder`) and `OrdersHandler` (stop answering 405 for DELETE). `Order`, `OrderRequest` and `Exceptions` unchanged. **Suspected** that `generateOrderId()` (`size() + 1`) would repeat ids after a delete. |
+| New Lambda function? | No for Architecture B (one function already handles `/orders/{id}`). Architecture A would need a fourth function, but it is not extended. |
+| API Gateway changes? | None for B: `ANY` with proxy already forwards DELETE. For A: new method, template, method/integration responses and a redeploy. |
+| Where does deletion logic live? | `OrderService`: a business operation on the collection. |
+| Where is 204 vs 404 decided? | The HTTP adapter: the service returns normally or throws `ORDER_NOT_FOUND`; the adapter translates that to 204 / 404. |
+| Tests to add | Service: delete existing, delete nonexistent, blank id, only the requested order is removed, no id reuse after delete. Adapter: 204 without body, 404, GET after DELETE → 404, DELETE twice → 404. Change the old "DELETE → 405" test. |
+
+### The agent's proposal
+
+Asked to implement the feature, the assistant first proposed:
+
+1. `OrderService.deleteOrder(String id)`: `INVALID_ORDER` for a blank id, `ORDER_NOT_FOUND` if missing, otherwise remove; returns nothing.
+2. **Replace `size() + 1` with a counter that never decreases and skips ids already taken.** Besides the delete problem, it pointed out a bug that already existed: with the sample orders `ORD-42`…`ORD-44` loaded, the 39th created order would be given `ORD-42`, an id that already exists, even with no delete at all.
+3. `OrdersHandler`: `DELETE` on `/orders/{id}` → call the service → `204` with no body. The 404 comes from the existing exception translation; no new error code.
+4. A test for an **unexpected internal error** (needed for section 18).
+5. No new Lambda, no API Gateway change: only upload the new JAR.
+
+### Prediction vs. proposal
+
+| Aspect | Prediction | Agent | Match? |
+|---|---|---|---|
+| Classes to change | `OrderService`, `OrdersHandler` | same | ✅ |
+| `generateOrderId` | "may need to change" | must change; also found the sample-id collision bug | ✅ — the agent was more specific |
+| New Lambda | no (B) | no | ✅ |
+| API Gateway | no change (B) | no change, no redeploy | ✅ |
+| Deletion logic | `OrderService` | `OrderService` | ✅ |
+| 204 / 404 decision | adapter | adapter | ✅ |
+| Tests | 5 service + 4 adapter + fix the 405 test | the same, plus "skip ids taken by existing orders" and the 500 test | ✅ + 2 extra |
+
+The prediction and the proposal agree on every architectural point. That is a good sign for the separation built in Part V: adding an operation touched **exactly** the two layers you would expect, the business operation and its HTTP translation, and no infrastructure. The agent's added value was in the details: it identified a latent bug that already existed, and it added the tests for it and for the internal-error case.
+
+### Implementation
+
+- `OrderService`:
+  - `deleteOrder(id)`;
+  - a private `findOrder(id)`, now shared by `getOrder` and `deleteOrder`;
+  - `generateOrderId()` based on a `nextId` counter that only grows and skips existing ids. It starts at `size() + 1`, so the existing ids (`ORD-1` in tests, `ORD-4` with the sample data) did not change.
+- `OrdersHandler`: route `DELETE /orders/{id}` → `service.deleteOrder(id)` → `204` with an empty header map and **no body**.
+- Tests:
+  - 6 new in `OrderServiceTest`;
+  - 5 new in `OrdersHandlerTest` (4 for DELETE + 1 for the internal error);
+  - the 405 test now uses `PUT`.
+
+  `mvn test`: **42 tests, 0 failures**.
+- Deployment: only the new JAR was uploaded to `serverless-rest-api-orders-proxy`. **API Gateway was not modified or redeployed.**
+
+### Results on the deployed API
+
+```
+$ curl -i $API/orders/ORD-42
+HTTP/2 200
+{"id":"ORD-42","customerId":"CUST-42","product":"MacBook Air","quantity":1}
+
+$ curl -i -X DELETE $API/orders/ORD-42
+HTTP/2 204
+
+$ curl -i $API/orders/ORD-42
+HTTP/2 404
+{"error":"ORDER_NOT_FOUND","message":"Order ORD-42 does not exist"}
+
+$ curl -i -X DELETE $API/orders/ORD-42
+HTTP/2 404
+{"error":"ORDER_NOT_FOUND","message":"Order ORD-42 does not exist"}
+
+$ curl -i -X DELETE $API/orders/ORD-999
+HTTP/2 404
+{"error":"ORDER_NOT_FOUND","message":"Order ORD-999 does not exist"}
+
+$ curl -i "$API/orders?customerId=CUST-42"
+HTTP/2 200
+[{"id":"ORD-43","customerId":"CUST-42","product":"Magic Mouse","quantity":2}]
+```
+
+The `204` response has no body and no `Content-Type`, as there is no content. After the delete, the customer search no longer includes `ORD-42`. The following `POST` returned `ORD-4`, not `ORD-3`, as the old `size() + 1` would have produced: the counter does not go back after a delete.
+
+**Is DELETE idempotent?** Yes, in the HTTP sense. Repeating it leaves the server in the same state (the order is gone); only the response changes, from 204 to 404. RFC 9110 defines idempotency by the effect on the server, not by the status code.
+
+---
+
+## 18. Final API
+
+Base URL (Architecture B, proxy): `https://0lx1iz642k.execute-api.us-east-1.amazonaws.com/dev`
+
+| Operation | Success | Errors |
+|---|---|---|
+| `POST /orders` | **201 Created** + `Location: /dev/orders/{id}` + order | 400 (`INVALID_CUSTOMER`, `INVALID_PRODUCT`, `INVALID_QUANTITY`, `INVALID_ORDER`, `INVALID_REQUEST`) |
+| `GET /orders/{id}` | **200 OK** + order | 404 `ORDER_NOT_FOUND` |
+| `GET /orders?customerId={customerId}` | **200 OK** + array (possibly `[]`) | 400 `INVALID_CUSTOMER` |
+| `DELETE /orders/{id}` | **204 No Content** | 404 `ORDER_NOT_FOUND` |
+| any other method on `/orders` or `/orders/{id}` | — | 405 `METHOD_NOT_ALLOWED` |
+| any failure not anticipated by the code | — | 500 `INTERNAL_ERROR` |
+
+### Evidence for each required status code
+
+| Status | Request | Verified on deployed API |
+|---|---|---|
+| 200 OK | `GET /orders/ORD-42`, `GET /orders?customerId=CUST-42` | ✅ (sections 13 and 17) |
+| 201 Created | `POST /orders` → `location: /dev/orders/ORD-4` | ✅ (sections 13 and 17) |
+| 204 No Content | `DELETE /orders/ORD-42` | ✅ (section 17) |
+| 400 Bad Request | `POST` with `quantity: 0`, without `product`, `{malformed`, `"quantity":"two"`; `GET /orders` without `customerId` | ✅ (section 13) |
+| 404 Not Found | `GET /orders/ORD-999`, `DELETE /orders/ORD-999`, `GET`/`DELETE` after delete | ✅ (sections 13 and 17) |
+
+### What happens on an unexpected internal error?
+
+There are three levels, depending on *where* the failure happens:
+
+1. **An unexpected exception inside our Java code** (a bug, a `NullPointerException`, a failing dependency). `OrdersHandler` catches any `RuntimeException` that is not a domain error and returns:
+   ```
+   HTTP 500
+   {"error":"INTERNAL_ERROR","message":"Unexpected error while processing the request"}
+   ```
+   The real exception is written to the CloudWatch log through `context.getLogger()`, but **never** sent to the client. This is verified locally by `shouldReturn500WithoutInternalDetailsOnUnexpectedError`. It replaces `getOrder` with one that throws `IllegalStateException("database connection lost at OrderRepository.java:87")`, and asserts that the response is exactly the generic 500 body above, with no class name, message or stack trace. It cannot be triggered on the deployed API, because the deployed code has no way to fail on purpose. That is precisely why the adapter's design makes it testable locally.
+2. **A failure of the Lambda function itself**: a timeout, running out of memory, an `Error` (not an `Exception`) such as `OutOfMemoryError`, or a crash during initialization. The handler never returns a proxy response, so **API Gateway** answers `502 Bad Gateway` with its own body `{"message": "Internal server error"}`. This does **not** follow our error contract, and the adapter cannot intercept it. It could be made consistent through API Gateway **Gateway Responses** (`DEFAULT_5XX`), which is configuration, not Java.
+3. **Failures before Lambda.** Throttling (`429`) or an unknown route (`403 Missing Authentication Token`) are produced by API Gateway and also use its own format. The same Gateway Responses mechanism applies.
+
+**Conclusion.** Every error that reaches our Java code follows the `{error, message}` contract and never exposes internals. Errors produced outside it (Lambda platform failures and API Gateway's own rejections) use AWS's default format, until Gateway Responses are configured. That is the remaining edge of the responsibility split analyzed in Checkpoint 3 and section 14: even in the proxy architecture, API Gateway still owns some error responses.

@@ -69,8 +69,12 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
         }
 
         if (segments.length == 2 && segments[0].equals("orders")) {
+            String id = pathParameter(event, "id", segments[1]);
             if ("GET".equals(method)) {
-                return getOrder(pathParameter(event, "id", segments[1]));
+                return getOrder(id);
+            }
+            if ("DELETE".equals(method)) {
+                return deleteOrder(id);
             }
             return error(405, "METHOD_NOT_ALLOWED", method + " is not allowed on /orders/{id}");
         }
@@ -100,6 +104,13 @@ public class OrdersHandler implements RequestHandler<APIGatewayProxyRequestEvent
 
     private APIGatewayProxyResponseEvent getOrder(String id) throws Exceptions, JsonProcessingException {
         return json(200, service.getOrder(id));
+    }
+
+    private APIGatewayProxyResponseEvent deleteOrder(String id) throws Exceptions {
+        service.deleteOrder(id);
+        return new APIGatewayProxyResponseEvent()
+                .withStatusCode(204)
+                .withHeaders(new LinkedHashMap<>());
     }
 
     private APIGatewayProxyResponseEvent findOrdersByCustomer(APIGatewayProxyRequestEvent event)
